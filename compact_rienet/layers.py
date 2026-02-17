@@ -417,7 +417,7 @@ class CompactRIEnetLayer(layers.Layer):
         if need_inverse_std:
             transformed_inverse_std = self.std_transform(std)
             std_for_structural = transformed_inverse_std
-            if self.std_normalization is not None and (need_precision or need_covariance):
+            if self.std_normalization is not None and need_inverse_std:
                 std_for_structural = self.std_normalization(transformed_inverse_std)
        
         # Precision-specific reconstruction
