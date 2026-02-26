@@ -282,6 +282,13 @@ pytest tests/
 Please cite the following references when using RIEnet:
 
 ```bibtex
+@article{bongiorno2025covariance,
+  title={End-to-End Large Portfolio Optimization for Variance Minimization with Neural Networks through Covariance Cleaning},
+  author={Bongiorno, Christian and Manolakis, Efstratios and Mantegna, Rosario N.},
+  journal={arXiv preprint arXiv:2507.01918},
+  year={2025}
+}
+
 @inproceedings{bongiorno2025compact,
   author = {Bongiorno, Christian and Manolakis, Efstratios and Mantegna, Rosario Nunzio},
   title = {Neural Network-Driven Volatility Drag Mitigation under Aggressive Leverage},
@@ -297,25 +304,16 @@ Please cite the following references when using RIEnet:
   location = {},
   series = {ICAIF '25}
   }
-
-
-
-@article{bongiorno2025covariance,
-  title={End-to-End Large Portfolio Optimization for Variance Minimization with Neural Networks through Covariance Cleaning},
-  author={Bongiorno, Christian and Manolakis, Efstratios and Mantegna, Rosario N.},
-  journal={arXiv preprint arXiv:2507.01918},
-  year={2025}
-}
 ```
 
 For software citation:
 
 ```bibtex
 @software{rienet2025,
-  title={RIEnet: A Compact Rotational Invariant Estimator Network for Global Minimum-Variance Optimisation},
+  title={RIEnet: A Rotational Invariant Estimator Network for Global Minimum-Variance Optimisation},
   author={Bongiorno, Christian},
-  year={2025},
-  version={1.1.3},
+  year={2026},
+  version={1.0.0},
   url={https://github.com/bongiornoc/RIEnet}
 }
 ```
