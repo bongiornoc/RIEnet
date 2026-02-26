@@ -1,0 +1,6 @@
+# Requirements for RIEnet
+numpy
+tensorflow
+setuptools
+keras
+pytest

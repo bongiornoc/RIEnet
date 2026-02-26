@@ -1,1 +1,1 @@
-# Tests directory for Compact-RIEnet package
+# Tests directory for RIEnet package

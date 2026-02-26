@@ -1,7 +1,7 @@
 """
-Loss functions module for Compact-RIEnet.
+Loss functions module for RIEnet.
 
-This module provides the variance loss used to train Compact-RIEnet for
+This module provides the variance loss used to train RIEnet for
 global minimum-variance (GMV) portfolio optimisation.
 
 References:
@@ -19,11 +19,11 @@ Copyright (c) 2025
 import tensorflow as tf
 
 
-@tf.keras.utils.register_keras_serializable(package='compact_rienet')
+@tf.keras.utils.register_keras_serializable(package='rienet')
 def variance_loss_function(covariance_true: tf.Tensor,
                           weights_predicted: tf.Tensor) -> tf.Tensor:
     """
-    Portfolio variance loss function for training Compact-RIEnet models.
+    Portfolio variance loss function for training RIEnet models.
     
     This loss function computes the global minimum-variance objective using the true
     covariance matrix and predicted portfolio weights.
@@ -36,14 +36,17 @@ def variance_loss_function(covariance_true: tf.Tensor,
     Parameters
     ----------
     covariance_true : tf.Tensor
-        Covariance matrices of shape (batch_size, n_assets, n_assets)
+        Covariance matrices with shape ``(batch_size, n_assets, n_assets)``.
+        Each matrix should be symmetric positive semi-definite.
     weights_predicted : tf.Tensor
-        Predicted portfolio weights of shape (batch_size, n_assets, 1)
+        Predicted weights with shape ``(batch_size, n_assets, 1)``.
+        The function assumes they already satisfy the portfolio constraint
+        (typically sum to 1 across assets).
         
     Returns
     -------
     tf.Tensor
-        Portfolio variance loss, shape (batch_size, 1, 1)
+        Per-sample portfolio variance tensor with shape ``(batch_size, 1, 1)``.
         
     Notes
     -----
@@ -55,7 +58,7 @@ def variance_loss_function(covariance_true: tf.Tensor,
     Examples
     --------
     >>> import tensorflow as tf
-    >>> from compact_rienet.losses import variance_loss_function
+    >>> from rienet.losses import variance_loss_function
     >>> 
     >>> # Sample data: 32 batches, 10 assets
     >>> covariance = tf.random.normal((32, 10, 10))

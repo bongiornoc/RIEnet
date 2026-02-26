@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive test for the compact_rienet package.
+Comprehensive test for the rienet package.
 Tests all functionality including the layer and loss functions.
 """
 
@@ -12,14 +12,14 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
 import tensorflow as tf
-from compact_rienet import CompactRIEnetLayer, variance_loss_function
+from rienet import RIEnetLayer, variance_loss_function
 
 def test_layer_functionality():
-    """Test the CompactRIEnetLayer with different configurations."""
-    print("Testing CompactRIEnetLayer functionality...")
+    """Test the RIEnetLayer with different configurations."""
+    print("Testing RIEnetLayer functionality...")
     
     # Test 1: Weights output
-    layer_weights = CompactRIEnetLayer(output_type='weights')
+    layer_weights = RIEnetLayer(output_type='weights')
     sample_data = tf.random.normal((4, 8, 20))  # 4 batches, 8 stocks, 20 days
     weights = layer_weights(sample_data)
     
@@ -27,7 +27,7 @@ def test_layer_functionality():
     print(f"✓ Weights sum check: {tf.reduce_sum(weights, axis=1).numpy()}")  # Should be close to 1
     
     # Test 2: Precision matrix output
-    layer_precision = CompactRIEnetLayer(output_type='precision')
+    layer_precision = RIEnetLayer(output_type='precision')
     precision = layer_precision(sample_data)
     
     print(f"✓ Precision matrix output shape: {precision.shape}")
@@ -63,7 +63,7 @@ def test_end_to_end_workflow():
     daily_returns = tf.random.normal((n_batch, n_stocks, n_days), stddev=0.02)
     
     # Create model
-    layer = CompactRIEnetLayer(output_type='weights')
+    layer = RIEnetLayer(output_type='weights')
     
     # Forward pass
     predicted_weights = layer(daily_returns)
@@ -89,7 +89,7 @@ def test_end_to_end_workflow():
 def main():
     """Run all tests."""
     print("=" * 60)
-    print("COMPACT-RIENET COMPREHENSIVE TEST")
+    print("RIENET COMPREHENSIVE TEST")
     print("=" * 60)
     
     try:
@@ -104,13 +104,13 @@ def main():
         
         print("\n" + "=" * 60)
         print("🎉 ALL TESTS PASSED! 🎉")
-        print("The Compact-RIEnet package is working correctly.")
+        print("The RIEnet package is working correctly.")
         print("=" * 60)
         
         # Show citation reminder
         print("\n📖 CITATION REMINDER:")
-        import compact_rienet
-        compact_rienet.print_citation()
+        import rienet
+        rienet.print_citation()
         
     except Exception as e:
         print(f"\n❌ TEST FAILED: {e}")

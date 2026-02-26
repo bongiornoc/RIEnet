@@ -1,7 +1,7 @@
 """
-Tests for the Compact-RIEnet package.
+Tests for the RIEnet package.
 
-This module contains comprehensive tests for all components of the Compact-RIEnet
+This module contains comprehensive tests for all components of the RIEnet
 package including the main layer, loss functions, and custom layers.
 """
 
@@ -15,12 +15,15 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from compact_rienet import (
-    CompactRIEnetLayer,
+from rienet import (
+    RIEnetLayer,
+    CorrelationEigenTransformLayer as PublicCorrelationEigenTransformLayer,
+    EigenWeightsLayer as PublicEigenWeightsLayer,
+    LagTransformLayer as PublicLagTransformLayer,
     variance_loss_function
 )
 
-from compact_rienet.custom_layers import (
+from rienet.custom_layers import (
     StandardDeviationLayer,
     CovarianceLayer, 
     SpectralDecompositionLayer,
@@ -31,31 +34,46 @@ from compact_rienet.custom_layers import (
     EigenProductLayer,
     EigenvectorRescalingLayer,
     EigenWeightsLayer,
+    CorrelationEigenTransformLayer,
     NormalizedSum,
     LagTransformLayer
 )
 
 
-class TestCompactRIEnetLayer:
-    """Test cases for the main CompactRIEnetLayer."""
+class TestRIEnetLayer:
+    """Test cases for the main RIEnetLayer."""
     
     def test_layer_initialization(self):
         """Test layer can be initialized with different parameters."""
         # Test default initialization
-        layer1 = CompactRIEnetLayer()
+        layer1 = RIEnetLayer()
         assert layer1.output_type == 'weights'
+        assert layer1._direction == 'bidirectional'
+        assert layer1._dimensional_features == ['n_stocks', 'n_days', 'q']
         
         # Test with precision output
-        layer2 = CompactRIEnetLayer(output_type='precision')
+        layer2 = RIEnetLayer(output_type='precision')
         assert layer2.output_type == 'precision'
         
         # Test invalid output type
         with pytest.raises(ValueError):
-            CompactRIEnetLayer(output_type='invalid')
+            RIEnetLayer(output_type='invalid')
+
+    def test_public_eigen_weights_layer_is_exposed(self):
+        """EigenWeightsLayer should be importable from package root."""
+        assert PublicEigenWeightsLayer is EigenWeightsLayer
+
+    def test_public_correlation_eigen_transform_layer_is_exposed(self):
+        """CorrelationEigenTransformLayer should be importable from package root."""
+        assert PublicCorrelationEigenTransformLayer is CorrelationEigenTransformLayer
+
+    def test_public_lag_transform_layer_is_exposed(self):
+        """LagTransformLayer should be importable from package root."""
+        assert PublicLagTransformLayer is LagTransformLayer
     
     def test_weights_output_shape(self):
         """Test that weights output has correct shape."""
-        layer = CompactRIEnetLayer(output_type='weights')
+        layer = RIEnetLayer(output_type='weights')
         
         # Test various input shapes
         test_cases = [
@@ -73,7 +91,7 @@ class TestCompactRIEnetLayer:
     
     def test_precision_output_shape(self):
         """Test that precision output has correct shape."""
-        layer = CompactRIEnetLayer(output_type='precision')
+        layer = RIEnetLayer(output_type='precision')
         
         batch_size, n_stocks, n_days = 16, 8, 50
         inputs = tf.random.normal((batch_size, n_stocks, n_days))
@@ -84,7 +102,7 @@ class TestCompactRIEnetLayer:
 
     def test_covariance_output_shape(self):
         """Test that covariance output has correct shape."""
-        layer = CompactRIEnetLayer(output_type='covariance')
+        layer = RIEnetLayer(output_type='covariance')
 
         batch_size, n_stocks, n_days = 12, 5, 40
         inputs = tf.random.normal((batch_size, n_stocks, n_days))
@@ -95,7 +113,7 @@ class TestCompactRIEnetLayer:
     
     def test_correlation_output_shape(self):
         """Test that correlation output has correct shape."""
-        layer = CompactRIEnetLayer(output_type='correlation')
+        layer = RIEnetLayer(output_type='correlation')
 
         batch_size, n_stocks, n_days = 7, 6, 30
         inputs = tf.random.normal((batch_size, n_stocks, n_days))
@@ -106,7 +124,7 @@ class TestCompactRIEnetLayer:
     
     def test_weights_normalization(self):
         """Test that portfolio weights sum to 1."""
-        layer = CompactRIEnetLayer(output_type='weights')
+        layer = RIEnetLayer(output_type='weights')
         
         batch_size, n_stocks, n_days = 8, 6, 40
         inputs = tf.random.normal((batch_size, n_stocks, n_days), stddev=0.02)
@@ -120,7 +138,7 @@ class TestCompactRIEnetLayer:
     
     def test_input_scaling(self):
         """Test that input scaling by 252 is applied."""
-        layer = CompactRIEnetLayer(output_type='weights')
+        layer = RIEnetLayer(output_type='weights')
         
         # Small inputs to see scaling effect
         small_inputs = tf.ones((4, 5, 30)) * 0.001
@@ -135,20 +153,29 @@ class TestCompactRIEnetLayer:
     
     def test_layer_serialization(self):
         """Test that layer can be serialized and deserialized."""
-        layer = CompactRIEnetLayer(output_type='weights', name='test_layer')
+        layer = RIEnetLayer(
+            output_type='weights',
+            recurrent_direction='forward',
+            dimensional_features=['n_stocks', 'rsqrt_n_days'],
+            name='test_layer'
+        )
         config = layer.get_config()
         
         # Check config contains expected keys
         assert 'output_type' in config
         assert config['output_type'] == 'weights'
+        assert config['recurrent_direction'] == 'forward'
+        assert config['dimensional_features'] == ['n_stocks', 'rsqrt_n_days']
         
         # Test from_config
-        new_layer = CompactRIEnetLayer.from_config(config)
+        new_layer = RIEnetLayer.from_config(config)
         assert new_layer.output_type == layer.output_type
+        assert new_layer._direction == 'forward'
+        assert new_layer._dimensional_features == ['n_stocks', 'rsqrt_n_days']
 
     def test_multiple_outputs(self):
         """Layer should optionally return multiple components."""
-        layer = CompactRIEnetLayer(output_type=['weights', 'precision'])
+        layer = RIEnetLayer(output_type=['weights', 'precision'])
 
         batch_size, n_stocks, n_days = 3, 4, 20
         inputs = tf.random.normal((batch_size, n_stocks, n_days))
@@ -159,9 +186,84 @@ class TestCompactRIEnetLayer:
         assert outputs['weights'].shape == (batch_size, n_stocks, 1)
         assert outputs['precision'].shape == (batch_size, n_stocks, n_stocks)
 
+    def test_additional_spectral_outputs_shapes(self):
+        """Layer should expose eigenvalues/eigenvectors/transformed_std outputs."""
+        layer = RIEnetLayer(
+            output_type=['eigenvalues', 'eigenvectors', 'transformed_std']
+        )
+
+        batch_size, n_stocks, n_days = 2, 5, 20
+        inputs = tf.random.normal((batch_size, n_stocks, n_days))
+        outputs = layer(inputs)
+
+        assert isinstance(outputs, dict)
+        assert set(outputs.keys()) == {'eigenvalues', 'eigenvectors', 'transformed_std'}
+        assert outputs['eigenvalues'].shape == (batch_size, n_stocks, 1)
+        assert outputs['eigenvectors'].shape == (batch_size, n_stocks, n_stocks)
+        assert outputs['transformed_std'].shape == (batch_size, n_stocks, 1)
+
+    def test_all_output_type_includes_new_components(self):
+        """The special 'all' output token should include all exposed components."""
+        layer = RIEnetLayer(output_type='all')
+
+        inputs = tf.random.normal((1, 4, 12))
+        outputs = layer(inputs)
+
+        expected_keys = {
+            'weights',
+            'precision',
+            'covariance',
+            'correlation',
+            'input_transformed',
+            'eigenvalues',
+            'eigenvectors',
+            'transformed_std',
+        }
+        assert isinstance(outputs, dict)
+        assert set(outputs.keys()) == expected_keys
+
+    def test_additional_outputs_are_non_inverse_values(self):
+        """Exposed eigenvalues/std outputs must be non-inverse quantities."""
+        layer = RIEnetLayer(output_type=['eigenvalues', 'transformed_std'])
+
+        inputs = tf.random.normal((2, 4, 16))
+        outputs = layer(inputs)
+
+        scaled_inputs = inputs * layer._annualization_factor
+        input_transformed = layer.lag_transform(scaled_inputs)
+        std, mean = layer.std_layer(input_transformed)
+
+        transformed_inverse_std = layer.std_transform(std)
+        std_for_structural = transformed_inverse_std
+        if layer.std_normalization is not None:
+            std_for_structural = layer.std_normalization(transformed_inverse_std)
+
+        zscores = (input_transformed - mean) / std
+        correlation_matrix = layer.covariance_layer(zscores)
+        attributes = layer.dimension_aware([zscores, correlation_matrix])
+        transformed_inverse_eigenvalues = layer.correlation_eigen_transform(
+            correlation_matrix,
+            attributes=attributes,
+            output_type='inverse_eigenvalues',
+        )
+
+        # Check reciprocal relationship to ensure the exposed outputs are not inverse.
+        np.testing.assert_allclose(
+            (outputs['eigenvalues'] * transformed_inverse_eigenvalues).numpy(),
+            1.0,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            (outputs['transformed_std'] * std_for_structural).numpy(),
+            1.0,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
     def test_custom_recurrent_configuration(self):
         """Custom recurrent sizes and cell types should be honoured."""
-        layer = CompactRIEnetLayer(
+        layer = RIEnetLayer(
             output_type='weights',
             recurrent_layer_sizes=[12, 6],
             std_hidden_layer_sizes=[4, 2],
@@ -173,9 +275,35 @@ class TestCompactRIEnetLayer:
         weights = layer(inputs)
 
         assert weights.shape == (batch_size, n_stocks, 1)
-        first_block = layer.eigenvalue_transform.recurrent_layers[0]
+        first_block = layer.correlation_eigen_transform.eigenvalue_transform.recurrent_layers[0]
         assert isinstance(first_block, tf.keras.layers.Bidirectional)
         assert isinstance(first_block.forward_layer, tf.keras.layers.LSTM)
+
+    def test_custom_recurrent_direction_and_dimensional_features(self):
+        """Direction and dimension-aware feature options should be configurable."""
+        layer = RIEnetLayer(
+            output_type='weights',
+            recurrent_direction='forward',
+            dimensional_features=['n_stocks', 'rsqrt_n_days'],
+        )
+
+        batch_size, n_stocks, n_days = 2, 3, 15
+        inputs = tf.random.normal((batch_size, n_stocks, n_days))
+        weights = layer(inputs)
+
+        assert weights.shape == (batch_size, n_stocks, 1)
+        first_block = layer.correlation_eigen_transform.eigenvalue_transform.recurrent_layers[0]
+        assert isinstance(first_block, tf.keras.layers.GRU)
+        assert first_block.go_backwards is False
+        assert layer.dimension_aware.features == ['n_stocks', 'rsqrt_n_days']
+
+    def test_invalid_recurrent_direction_raises(self):
+        with pytest.raises(ValueError, match="recurrent_direction"):
+            RIEnetLayer(recurrent_direction='sideways')
+
+    def test_invalid_dimensional_features_raises(self):
+        with pytest.raises(ValueError, match="dimensional_features"):
+            RIEnetLayer(dimensional_features=['n_stocks', 'bad_feature'])
 
 
 class TestVarianceLoss:
@@ -269,14 +397,14 @@ class TestCustomLayers:
         features = ['n_stocks', 'n_days', 'q']
         layer = DimensionAwareLayer(features=features, name='test_dim_aware')
         
-        batch_size, n_stocks, n_days, n_eigenvals = 4, 6, 50, 6
-        eigenvalues = tf.random.normal((batch_size, n_eigenvals, 1))
-        original_inputs = tf.random.normal((batch_size, n_stocks, n_days))
+        batch_size, n_stocks, n_days = 4, 6, 50
+        standardized_returns = tf.random.normal((batch_size, n_stocks, n_days))
+        correlation_matrix = tf.eye(n_stocks, batch_shape=[batch_size])
         
-        enhanced = layer([eigenvalues, original_inputs])
+        enhanced = layer([standardized_returns, correlation_matrix])
         
-        # Should add 3 features
-        expected_shape = (batch_size, n_eigenvals, 1 + len(features))
+        # Should output only the 3 attribute channels
+        expected_shape = (batch_size, n_stocks, len(features))
         assert enhanced.shape == expected_shape
     
     def test_deep_layer(self):
@@ -355,7 +483,7 @@ class TestCustomLayers:
         inverse_eigenvalues = tf.random.uniform((batch_size, n_assets, 1), 0.5, 1.5)
         inverse_std = tf.random.uniform((batch_size, n_assets, 1), 0.8, 1.2)
 
-        weights = layer([eigenvectors, inverse_eigenvalues, inverse_std])
+        weights = layer(eigenvectors, inverse_eigenvalues, inverse_std)
 
         ev = eigenvectors.numpy()
         inv_eig = inverse_eigenvalues.numpy().reshape(batch_size, n_assets)
@@ -364,6 +492,199 @@ class TestCustomLayers:
         raw = np.einsum('bik,bk,bk,bi->bi', ev, inv_eig, c, inv_std_np)
         expected = raw / raw.sum(axis=1, keepdims=True)
         np.testing.assert_allclose(weights.numpy().squeeze(-1), expected, rtol=1e-5, atol=1e-6)
+
+    def test_eigen_weights_layer_without_inverse_std(self):
+        """When inverse_std is omitted, no extra scaling is applied."""
+        layer = EigenWeightsLayer(name='test_eigen_weights_no_std')
+
+        batch_size, n_assets = 2, 4
+        eigenvectors = tf.linalg.qr(tf.random.normal((batch_size, n_assets, n_assets)))[0]
+        inverse_eigenvalues = tf.random.uniform((batch_size, n_assets, 1), 0.5, 1.5)
+
+        weights = layer(eigenvectors, inverse_eigenvalues)
+
+        ev = eigenvectors.numpy()
+        inv_eig = inverse_eigenvalues.numpy().reshape(batch_size, n_assets)
+        c = ev.sum(axis=1)
+        raw = np.einsum('bik,bk,bk->bi', ev, inv_eig, c)
+        expected = raw / raw.sum(axis=1, keepdims=True)
+        np.testing.assert_allclose(weights.numpy().squeeze(-1), expected, rtol=1e-5, atol=1e-6)
+
+    def test_eigen_weights_layer_fixed_inputs_matches_reference(self):
+        """Fixed inputs should reproduce the original reference formula."""
+        layer = EigenWeightsLayer(name='test_eigen_weights_fixed')
+
+        eigenvectors = tf.constant(
+            [[[1.0, 0.0, 0.0],
+              [0.2, 0.9, 0.1],
+              [0.3, 0.2, 0.8]]],
+            dtype=tf.float32,
+        )
+        inverse_eigenvalues = tf.constant([[[1.2], [0.7], [1.1]]], dtype=tf.float32)
+        inverse_std = tf.constant([[[0.9], [1.0], [1.1]]], dtype=tf.float32)
+
+        weights = layer(eigenvectors, inverse_eigenvalues, inverse_std)
+
+        ev = eigenvectors.numpy()
+        inv_eig = inverse_eigenvalues.numpy().reshape(1, 3)
+        inv_std_np = inverse_std.numpy().reshape(1, 3)
+        c = ev.sum(axis=1)
+        raw = np.einsum('bik,bk,bk,bi->bi', ev, inv_eig, c, inv_std_np)
+        expected = raw / raw.sum(axis=1, keepdims=True)
+        np.testing.assert_allclose(weights.numpy().squeeze(-1), expected, rtol=1e-6, atol=1e-7)
+
+    def test_correlation_eigen_transform_layer_without_attributes(self):
+        """CorrelationEigenTransformLayer should clean correlation without attributes."""
+        layer = CorrelationEigenTransformLayer(name='test_corr_eig_transform')
+
+        batch_size, n_assets = 3, 5
+        A = tf.random.normal((batch_size, n_assets, n_assets))
+        covariance = tf.matmul(A, A, transpose_b=True)
+        diag = tf.linalg.diag_part(covariance)
+        inv_std = tf.math.rsqrt(tf.maximum(diag, tf.cast(1e-6, covariance.dtype)))
+        correlation = (
+            covariance
+            * tf.expand_dims(inv_std, axis=-1)
+            * tf.expand_dims(inv_std, axis=-2)
+        )
+
+        cleaned = layer(correlation)
+
+        assert cleaned.shape == (batch_size, n_assets, n_assets)
+        np.testing.assert_allclose(
+            cleaned.numpy(),
+            np.transpose(cleaned.numpy(), (0, 2, 1)),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        diag_clean = tf.linalg.diag_part(cleaned)
+        np.testing.assert_allclose(diag_clean.numpy(), 1.0, rtol=1e-4, atol=1e-5)
+
+    def test_correlation_eigen_transform_layer_with_attributes(self):
+        """Layer should accept optional (batch, k) attributes."""
+        layer = CorrelationEigenTransformLayer(name='test_corr_eig_transform_attr')
+
+        batch_size, n_assets, k = 2, 4, 3
+        A = tf.random.normal((batch_size, n_assets, n_assets))
+        covariance = tf.matmul(A, A, transpose_b=True)
+        diag = tf.linalg.diag_part(covariance)
+        inv_std = tf.math.rsqrt(tf.maximum(diag, tf.cast(1e-6, covariance.dtype)))
+        correlation = (
+            covariance
+            * tf.expand_dims(inv_std, axis=-1)
+            * tf.expand_dims(inv_std, axis=-2)
+        )
+        attributes = tf.random.normal((batch_size, k))
+
+        cleaned_with_attr = layer(correlation, attributes=attributes)
+
+        assert cleaned_with_attr.shape == (batch_size, n_assets, n_assets)
+        np.testing.assert_allclose(
+            cleaned_with_attr.numpy(),
+            np.transpose(cleaned_with_attr.numpy(), (0, 2, 1)),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+    def test_correlation_eigen_transform_layer_inconsistent_feature_width_raises(self):
+        """Changing attribute width on the same layer instance should fail clearly."""
+        layer = CorrelationEigenTransformLayer(name='test_corr_eig_transform_feat_width')
+
+        correlation = tf.eye(4, batch_shape=[2])
+        attributes = tf.random.normal((2, 3))
+        _ = layer(correlation, attributes=attributes)
+
+        with pytest.raises(ValueError, match='Inconsistent eigenvalue feature width'):
+            _ = layer(correlation)
+
+    def test_correlation_eigen_transform_layer_batch_mismatch_raises(self):
+        """Attributes batch must match correlation batch."""
+        layer = CorrelationEigenTransformLayer(name='test_corr_eig_transform_mismatch')
+
+        correlation = tf.eye(4, batch_shape=[2])
+        attributes = tf.random.normal((3, 2))
+
+        with pytest.raises(ValueError, match='Batch mismatch'):
+            _ = layer(correlation, attributes=attributes)
+
+    def test_correlation_eigen_transform_layer_multiple_outputs(self):
+        """Layer should expose selectable output components."""
+        layer = CorrelationEigenTransformLayer(
+            output_type=[
+                'correlation',
+                'inverse_correlation',
+                'eigenvalues',
+                'eigenvectors',
+                'inverse_eigenvalues',
+            ],
+            name='test_corr_eig_transform_outputs',
+        )
+
+        correlation = tf.eye(4, batch_shape=[2])
+        attributes = tf.random.normal((2, 2))
+        outputs = layer(correlation, attributes=attributes)
+
+        assert isinstance(outputs, dict)
+        assert set(outputs.keys()) == {
+            'correlation',
+            'inverse_correlation',
+            'eigenvalues',
+            'eigenvectors',
+            'inverse_eigenvalues',
+        }
+        assert outputs['correlation'].shape == (2, 4, 4)
+        assert outputs['inverse_correlation'].shape == (2, 4, 4)
+        assert outputs['eigenvalues'].shape == (2, 4, 1)
+        assert outputs['eigenvectors'].shape == (2, 4, 4)
+        assert outputs['inverse_eigenvalues'].shape == (2, 4, 1)
+
+    def test_correlation_eigen_transform_layer_inverse_correlation_output(self):
+        """Layer should return inverse correlation when requested."""
+        layer = CorrelationEigenTransformLayer(
+            output_type='inverse_correlation',
+            name='test_corr_eig_transform_inv_corr',
+        )
+
+        correlation = tf.eye(4, batch_shape=[2])
+        inverse_correlation = layer(correlation)
+
+        assert inverse_correlation.shape == (2, 4, 4)
+        np.testing.assert_allclose(
+            inverse_correlation.numpy(),
+            np.transpose(inverse_correlation.numpy(), (0, 2, 1)),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+    def test_correlation_eigen_transform_layer_invalid_output_type_raises(self):
+        with pytest.raises(ValueError, match='output_type'):
+            CorrelationEigenTransformLayer(output_type='bad_output', name='test_corr_bad_out')
+
+    def test_correlation_eigen_transform_layer_serialization(self):
+        """CorrelationEigenTransformLayer should serialize/deserialize correctly."""
+        layer = CorrelationEigenTransformLayer(
+            recurrent_layer_sizes=(8,),
+            recurrent_cell='GRU',
+            recurrent_direction='forward',
+            final_hidden_layer_sizes=(4,),
+            output_type=['correlation', 'inverse_correlation', 'inverse_eigenvalues'],
+            name='test_corr_eig_transform_ser'
+        )
+
+        correlation = tf.eye(4, batch_shape=[2])
+        attributes = tf.random.normal((2, 2))
+        _ = layer(correlation, attributes=attributes)
+
+        serialized = tf.keras.layers.serialize(layer)
+        deserialized = tf.keras.layers.deserialize(serialized)
+
+        assert isinstance(deserialized, CorrelationEigenTransformLayer)
+        output = deserialized(correlation, attributes=attributes)
+        assert isinstance(output, dict)
+        assert set(output.keys()) == {'correlation', 'inverse_correlation', 'inverse_eigenvalues'}
+        assert output['correlation'].shape == (2, 4, 4)
+        assert output['inverse_correlation'].shape == (2, 4, 4)
+        assert output['inverse_eigenvalues'].shape == (2, 4, 1)
 
     def test_precision_normalization_diagonal_mean(self):
         """Normalized precision keeps covariance diagonal centred on one."""
@@ -406,7 +727,7 @@ class TestCustomLayers:
 
     def test_compact_layer_input_transformed_output(self):
         """Layer can emit transformed inputs when requested."""
-        layer = CompactRIEnetLayer(output_type=['input_transformed'],
+        layer = RIEnetLayer(output_type=['input_transformed'],
                                    normalize_transformed_variance=False,
                                    name='test_input_transformed')
         batch, n_assets, n_days = 2, 3, 5
@@ -416,7 +737,7 @@ class TestCustomLayers:
 
     def test_compact_layer_covariance_unit_diag_mean(self):
         """Default configuration keeps the covariance diagonal centred on one."""
-        layer = CompactRIEnetLayer(output_type=['covariance'],
+        layer = RIEnetLayer(output_type=['covariance'],
                                    name='test_covariance_unit')
         batch, n_assets, n_days = 1, 4, 6
         inputs = tf.random.normal((batch, n_assets, n_days))
@@ -427,7 +748,7 @@ class TestCustomLayers:
 
     def test_compact_layer_skip_variance_normalization(self):
         """Disabling variance normalization leaves the layer without the normalizer."""
-        layer = CompactRIEnetLayer(output_type='precision',
+        layer = RIEnetLayer(output_type='precision',
                                    normalize_transformed_variance=False,
                                    name='test_no_std_norm')
         assert layer.std_normalization is None
@@ -465,11 +786,11 @@ class TestIntegration:
     """Integration tests for the complete package."""
     
     def test_full_model_creation(self):
-        """Test creating a complete Keras model with CompactRIEnetLayer."""
+        """Test creating a complete Keras model with RIEnetLayer."""
         n_stocks = 8
         
         inputs = tf.keras.Input(shape=(n_stocks, None))
-        weights = CompactRIEnetLayer(output_type='weights')(inputs)
+        weights = RIEnetLayer(output_type='weights')(inputs)
         model = tf.keras.Model(inputs=inputs, outputs=weights)
         
         # Test model compilation
@@ -488,7 +809,7 @@ class TestIntegration:
         
         # Build model
         model = tf.keras.Sequential([
-            CompactRIEnetLayer(output_type='weights')
+            RIEnetLayer(output_type='weights')
         ])
         
         # Compile with custom loss
@@ -517,7 +838,7 @@ class TestMixedPrecision:
         original_policy = tf.keras.mixed_precision.global_policy()
         tf.keras.mixed_precision.set_global_policy('mixed_float16')
         try:
-            layer = CompactRIEnetLayer(output_type=['weights', 'precision'],
+            layer = RIEnetLayer(output_type=['weights', 'precision'],
                                        name='test_mixed_precision')
             batch_size, n_stocks, n_days = 2, 3, 12
             inputs = tf.random.normal((batch_size, n_stocks, n_days))

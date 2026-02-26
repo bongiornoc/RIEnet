@@ -1,5 +1,5 @@
 """
-Setup script for Compact-RIEnet package.
+Setup script for RIEnet package.
 """
 
 from setuptools import setup, find_packages
@@ -12,7 +12,7 @@ with open(os.path.join(this_directory, 'README.md'), encoding='utf-8') as f:
 
 # Read version from version.py file
 def read_version():
-    version_file = os.path.join(this_directory, 'compact_rienet', 'version.py')
+    version_file = os.path.join(this_directory, 'rienet', 'version.py')
     with open(version_file, 'r') as f:
         version_content = f.read()
     version_line = [line for line in version_content.split('\n') if line.startswith('__version__')]
@@ -21,20 +21,20 @@ def read_version():
     raise RuntimeError("Unable to find version string.")
 
 setup(
-    name="compact-rienet",
+    name="rienet",
     version=read_version(),
     author="Christian Bongiorno",
     author_email="christian.bongiorno@centralesupelec.fr",
     description="A Compact Recurrent-Invariant Eigenvalue Network for Portfolio Optimization",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/bongiornoc/Compact-RIEnet",
+    url="https://github.com/bongiornoc/RIEnet",
     project_urls={
-        "Bug Tracker": "https://github.com/bongiornoc/Compact-RIEnet/issues",
-        "Documentation": "https://github.com/bongiornoc/Compact-RIEnet",
-        "Source Code": "https://github.com/bongiornoc/Compact-RIEnet",
+        "Bug Tracker": "https://github.com/bongiornoc/RIEnet/issues",
+        "Documentation": "https://github.com/bongiornoc/RIEnet",
+        "Source Code": "https://github.com/bongiornoc/RIEnet",
     },
-    packages=find_packages(),
+    packages=find_packages(include=["rienet", "rienet.*"]),
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Science/Research",
