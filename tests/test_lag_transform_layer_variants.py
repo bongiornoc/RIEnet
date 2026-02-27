@@ -3,7 +3,7 @@ import pytest
 import tensorflow as tf
 
 from rienet import RIEnetLayer
-from rienet.custom_layers import LagTransformLayer
+from rienet.trainable_layers import LagTransformLayer
 from rienet.lag_transform import LagTransformLayer as LagTransformFromModule
 
 

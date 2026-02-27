@@ -64,24 +64,25 @@ class StandardDeviationLayer(layers.Layer):
             ``(std, mean)`` where both tensors have the same rank as ``x`` and
             singleton size on ``self.axis``.
         """
-        dtype = x.dtype
+        x_work, original_dtype = ensure_float32(x)
+        dtype = x_work.dtype
         epsilon = epsilon_for_dtype(dtype, self.epsilon)
 
-        sample_size = tf.cast(tf.shape(x)[self.axis], dtype)
-        sample_size = tf.maximum(sample_size, 1.0)
+        sample_size = tf.cast(tf.shape(x_work)[self.axis], dtype)
+        sample_size = tf.maximum(sample_size, tf.cast(1.0, dtype))
 
-        mean = tf.reduce_mean(x, axis=self.axis, keepdims=True)
-        centered = x - mean
+        mean = tf.reduce_mean(x_work, axis=self.axis, keepdims=True)
+        centered = x_work - mean
 
         if self.demean:
-            denom = tf.maximum(sample_size - 1.0, 1.0)
+            denom = tf.maximum(sample_size - tf.cast(1.0, dtype), tf.cast(1.0, dtype))
         else:
             denom = sample_size
 
         variance = tf.reduce_sum(tf.square(centered), axis=self.axis, keepdims=True) / denom
         std = tf.sqrt(tf.maximum(variance, epsilon))
 
-        return std, mean
+        return restore_dtype(std, original_dtype), restore_dtype(mean, original_dtype)
 
     def get_config(self) -> dict:
         config = super().get_config()
@@ -135,16 +136,18 @@ class CovarianceLayer(layers.Layer):
             Tensor of shape ``(..., n_assets, n_assets)`` if
             ``expand_dims=False``; otherwise ``(..., 1, n_assets, n_assets)``.
         """
+        returns_work, original_dtype = ensure_float32(returns)
+
         if self.normalize:
-            sample_size = tf.cast(tf.shape(returns)[-1], returns.dtype)
-            covariance = tf.matmul(returns, returns, transpose_b=True) / sample_size
+            sample_size = tf.cast(tf.shape(returns_work)[-1], returns_work.dtype)
+            covariance = tf.matmul(returns_work, returns_work, transpose_b=True) / sample_size
         else:
-            covariance = tf.matmul(returns, returns, transpose_b=True)
+            covariance = tf.matmul(returns_work, returns_work, transpose_b=True)
             
         if self.expand_dims:
             covariance = tf.expand_dims(covariance, axis=-3)
             
-        return covariance
+        return restore_dtype(covariance, original_dtype)
 
     def get_config(self) -> dict:
         config = super().get_config()
@@ -252,9 +255,14 @@ class DimensionAwareLayer(layers.Layer):
         """
         standardized_returns, correlation_matrix = inputs
         n_stocks_raw = tf.shape(correlation_matrix)[-1]
-        n_stocks = tf.cast(n_stocks_raw, tf.float32)
-        n_days = tf.cast(tf.shape(standardized_returns)[-1], tf.float32)
         target_dtype = standardized_returns.dtype
+        compute_dtype = (
+            tf.float32
+            if target_dtype in (tf.float16, tf.bfloat16)
+            else target_dtype
+        )
+        n_stocks = tf.cast(n_stocks_raw, compute_dtype)
+        n_days = tf.cast(tf.shape(standardized_returns)[-1], compute_dtype)
         final_shape = tf.stack(
             [
                 tf.shape(correlation_matrix)[0],
@@ -385,23 +393,24 @@ class CustomNormalizationLayer(layers.Layer):
         - ``mode='sum'`` enforces ``sum(x)=n`` along ``axis``.
         - ``mode='inverse'`` enforces ``mean(x^{-p})=1`` along ``axis``.
         """
-        dtype = x.dtype
+        x_work, original_dtype = ensure_float32(x)
+        dtype = x_work.dtype
         epsilon = epsilon_for_dtype(dtype, self.epsilon)
-        n = tf.cast(tf.shape(x)[self.axis], dtype)
+        n = tf.cast(tf.shape(x_work)[self.axis], dtype)
 
-        denom_axis = tf.reduce_sum(x, axis=self.axis, keepdims=True)
+        denom_axis = tf.reduce_sum(x_work, axis=self.axis, keepdims=True)
 
         if self.mode == 'sum':
-            x = n * x / tf.maximum(denom_axis, epsilon)
+            x_work = n * x_work / tf.maximum(denom_axis, epsilon)
         elif self.mode == 'inverse':
-            x = tf.maximum(x, epsilon)
-            inv = tf.math.pow(x, -self.inverse_power)
+            x_work = tf.maximum(x_work, epsilon)
+            inv = tf.math.pow(x_work, -self.inverse_power)
             inv_total = tf.reduce_sum(inv, axis=self.axis, keepdims=True)
             inv_normalized = n * inv / tf.maximum(inv_total, epsilon)
             power = tf.cast(-1.0 / self.inverse_power, dtype)
-            x = tf.math.pow(tf.maximum(inv_normalized, epsilon), power)
+            x_work = tf.math.pow(tf.maximum(inv_normalized, epsilon), power)
         
-        return x
+        return restore_dtype(x_work, original_dtype)
 
     def get_config(self) -> dict:
         config = super().get_config()
@@ -461,19 +470,21 @@ class EigenvectorRescalingLayer(layers.Layer):
             Rescaled eigenvectors with the same shape as the input eigenvectors.
         """
         eigenvectors, eigenvalues = inputs
-        dtype = eigenvectors.dtype
-        eigenvectors = tf.convert_to_tensor(eigenvectors, dtype=dtype)
-        eigenvalues = tf.convert_to_tensor(eigenvalues, dtype=dtype)
+        eigenvectors = tf.convert_to_tensor(eigenvectors)
+        eigenvectors_work, original_dtype = ensure_float32(eigenvectors)
+        dtype = eigenvectors_work.dtype
+        eigenvalues = tf.cast(tf.convert_to_tensor(eigenvalues), dtype)
 
-        target_shape = tf.shape(eigenvectors)[:-1]
+        target_shape = tf.shape(eigenvectors_work)[:-1]
         eigenvalues = tf.reshape(eigenvalues, target_shape)
 
-        diag = tf.einsum('...ij,...j,...ij->...i', eigenvectors, eigenvalues, eigenvectors)
+        diag = tf.einsum('...ij,...j,...ij->...i', eigenvectors_work, eigenvalues, eigenvectors_work)
         eps = epsilon_for_dtype(dtype, self.epsilon)
         diag = tf.maximum(diag, eps)
         inv_sqrt = tf.math.rsqrt(diag)
         scaling = tf.expand_dims(inv_sqrt, axis=-1)
-        return eigenvectors * scaling
+        result = eigenvectors_work * scaling
+        return restore_dtype(result, original_dtype)
 
     def get_config(self) -> dict:
         config = super().get_config()
@@ -513,15 +524,17 @@ class EigenProductLayer(layers.Layer):
         tf.Tensor
             Reconstructed matrix ``V diag(λ) V^T`` with shape ``(..., n, n)``.
         """
-        dtype = eigenvectors.dtype
-        eigenvalues = tf.convert_to_tensor(eigenvalues, dtype=dtype)
-        eigenvectors = tf.convert_to_tensor(eigenvectors, dtype=dtype)
+        eigenvectors = tf.convert_to_tensor(eigenvectors)
+        eigenvectors_work, original_dtype = ensure_float32(eigenvectors)
+        dtype = eigenvectors_work.dtype
+        eigenvalues = tf.cast(tf.convert_to_tensor(eigenvalues), dtype)
 
-        target_shape = tf.shape(eigenvectors)[:-1]
+        target_shape = tf.shape(eigenvectors_work)[:-1]
         eigenvalues = tf.reshape(eigenvalues, target_shape)
 
-        scaled_vectors = eigenvectors * tf.expand_dims(eigenvalues, axis=-2)
-        return tf.matmul(scaled_vectors, eigenvectors, transpose_b=True)
+        scaled_vectors = eigenvectors_work * tf.expand_dims(eigenvalues, axis=-2)
+        result = tf.matmul(scaled_vectors, eigenvectors_work, transpose_b=True)
+        return restore_dtype(result, original_dtype)
 
     def get_config(self) -> dict:
         return super().get_config()
@@ -603,20 +616,21 @@ class EigenWeightsLayer(layers.Layer):
         tf.Tensor
             Normalized weights with shape ``(..., n_assets, 1)``.
         """
-        dtype = eigenvectors.dtype
+        eigenvectors = tf.convert_to_tensor(eigenvectors)
+        eigenvectors_work, original_dtype = ensure_float32(eigenvectors)
+        dtype = eigenvectors_work.dtype
 
-        eigenvectors = tf.convert_to_tensor(eigenvectors, dtype=dtype)
-        inverse_eigenvalues = tf.convert_to_tensor(inverse_eigenvalues, dtype=dtype)
+        inverse_eigenvalues = tf.cast(tf.convert_to_tensor(inverse_eigenvalues), dtype)
 
-        eigenvector_sum = tf.reduce_sum(eigenvectors, axis=-2)
+        eigenvector_sum = tf.reduce_sum(eigenvectors_work, axis=-2)
         target_shape = tf.shape(eigenvector_sum)
 
         inverse_eigenvalues = tf.reshape(inverse_eigenvalues, target_shape)
         spectral_term = inverse_eigenvalues * eigenvector_sum
-        raw_weights = tf.linalg.matvec(eigenvectors, spectral_term)
+        raw_weights = tf.linalg.matvec(eigenvectors_work, spectral_term)
 
         if inverse_std is not None:
-            inverse_std = tf.convert_to_tensor(inverse_std, dtype=dtype)
+            inverse_std = tf.cast(tf.convert_to_tensor(inverse_std), dtype)
             inverse_std = tf.reshape(inverse_std, target_shape)
             raw_weights = raw_weights * inverse_std
 
@@ -626,7 +640,7 @@ class EigenWeightsLayer(layers.Layer):
         safe_denom = tf.where(tf.abs(denom) < epsilon, sign * epsilon, denom)
         weights = raw_weights / safe_denom
 
-        return tf.expand_dims(weights, axis=-1)
+        return restore_dtype(tf.expand_dims(weights, axis=-1), original_dtype)
 
     def get_config(self) -> dict:
         config = super().get_config()
@@ -684,9 +698,10 @@ class NormalizedSum(layers.Layer):
             Tensor with the same rank as ``x`` where the aggregated values are
             normalized by a safe denominator.
         """
-        dtype = x.dtype
+        x_work, original_dtype = ensure_float32(x)
+        dtype = x_work.dtype
         epsilon = epsilon_for_dtype(dtype, self.epsilon)
-        w = tf.reduce_sum(x, axis=self.axis_1, keepdims=True)
+        w = tf.reduce_sum(x_work, axis=self.axis_1, keepdims=True)
         denominator = tf.reduce_sum(w, axis=self.axis_2, keepdims=True)
         sign = tf.where(denominator >= 0, tf.ones_like(denominator), -tf.ones_like(denominator))
         safe_denominator = tf.where(
@@ -695,7 +710,7 @@ class NormalizedSum(layers.Layer):
             denominator
         )
         result = w / safe_denominator
-        return result
+        return restore_dtype(result, original_dtype)
 
     def get_config(self) -> dict:
         config = super().get_config()

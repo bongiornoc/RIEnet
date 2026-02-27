@@ -56,7 +56,11 @@ def epsilon_for_dtype(
     if not dtype.is_floating:
         raise TypeError("epsilon_for_dtype requires a floating-point dtype")
 
-    dtype_eps = float(np.finfo(dtype.as_numpy_dtype).eps)
+    if dtype == tf.bfloat16:
+        # bfloat16 has 7 mantissa bits -> machine epsilon = 2^-7.
+        dtype_eps = 2.0 ** -7
+    else:
+        dtype_eps = float(np.finfo(dtype.as_numpy_dtype).eps)
     scaled_base = base_value
     # Ensure the epsilon is never smaller than the machine epsilon of the dtype.
     scaled = max(scaled_base, dtype_eps)

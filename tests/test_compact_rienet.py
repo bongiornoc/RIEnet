@@ -2,7 +2,7 @@
 Tests for the RIEnet package.
 
 This module contains comprehensive tests for all components of the RIEnet
-package including the main layer, loss functions, and custom layers.
+package including the main layer, loss functions, and supporting layers.
 """
 
 import pytest
@@ -23,20 +23,22 @@ from rienet import (
     variance_loss_function
 )
 
-from rienet.custom_layers import (
+from rienet.ops_layers import (
     StandardDeviationLayer,
-    CovarianceLayer, 
+    CovarianceLayer,
     SpectralDecompositionLayer,
     DimensionAwareLayer,
-    DeepLayer,
-    DeepRecurrentLayer,
     CustomNormalizationLayer,
     EigenProductLayer,
     EigenvectorRescalingLayer,
     EigenWeightsLayer,
-    CorrelationEigenTransformLayer,
     NormalizedSum,
-    LagTransformLayer
+)
+from rienet.trainable_layers import (
+    DeepLayer,
+    DeepRecurrentLayer,
+    CorrelationEigenTransformLayer,
+    LagTransformLayer,
 )
 
 

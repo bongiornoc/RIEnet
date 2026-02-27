@@ -24,7 +24,6 @@ RIEnet is a **end-to-end neural estimator** for **Global Minimum-Variance (GMV)*
 
 - `rienet.trainable_layers`: layers with trainable parameters (`RIEnetLayer`, `LagTransformLayer`, `DeepLayer`, `DeepRecurrentLayer`, `CorrelationEigenTransformLayer`).
 - `rienet.ops_layers`: deterministic operation layers (statistics, normalization, eigensystem algebra, weight post-processing).
-- `rienet.custom_layers` and `rienet.layers` are kept as backward-compatible wrappers.
 
 ## Installation
 

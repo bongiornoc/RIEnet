@@ -18,6 +18,8 @@ Copyright (c) 2025
 
 import tensorflow as tf
 
+from .dtype_utils import ensure_float32
+
 
 @tf.keras.utils.register_keras_serializable(package='rienet')
 def variance_loss_function(covariance_true: tf.Tensor,
@@ -71,7 +73,14 @@ def variance_loss_function(covariance_true: tf.Tensor,
     >>> print(f"Portfolio variance: {loss.shape}")  # (32, 1, 1)
     
 """
+    covariance_true = tf.convert_to_tensor(covariance_true)
+    weights_predicted = tf.convert_to_tensor(weights_predicted)
+
+    covariance_true, _ = ensure_float32(covariance_true)
+    weights_predicted, _ = ensure_float32(weights_predicted)
+
     dtype = weights_predicted.dtype
+    covariance_true = tf.cast(covariance_true, dtype)
     n = tf.cast(tf.shape(covariance_true)[-1], dtype=dtype)
 
     # Portfolio variance: n * w^T Σ w (Eq. 6 in the paper)

@@ -17,7 +17,7 @@ from .trainable_layers import (
 )
 from .ops_layers import EigenWeightsLayer
 from .losses import variance_loss_function
-from . import trainable_layers, ops_layers, custom_layers, losses, lag_transform
+from . import trainable_layers, ops_layers, losses, lag_transform
 from .version import __version__
 
 # Author information
@@ -35,7 +35,6 @@ __all__ = [
     'print_citation',
     'trainable_layers',
     'ops_layers',
-    'custom_layers',
     'losses',
     'lag_transform',
     '__version__'

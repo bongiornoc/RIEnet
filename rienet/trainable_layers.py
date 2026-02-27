@@ -12,7 +12,7 @@ from keras import backend as K
 from keras import layers, initializers
 from typing import List, Literal, Optional, Sequence, Tuple, Union
 
-from .dtype_utils import epsilon_for_dtype
+from .dtype_utils import ensure_float32, restore_dtype, epsilon_for_dtype
 from .ops_layers import (
     NormalizationModeType,
     StandardDeviationLayer,
@@ -681,7 +681,7 @@ class CorrelationEigenTransformLayer(layers.Layer):
             attr_rank = attributes.shape.rank
             if attr_rank is not None and attr_rank not in {2, 3}:
                 raise ValueError("attributes must have shape (batch, k) or (batch, n_assets, k).")
-            attributes = tf.convert_to_tensor(attributes, dtype=dtype)
+            attributes = tf.cast(tf.convert_to_tensor(attributes), dtype)
 
             corr_batch = correlation_matrix.shape[0]
             attr_batch = attributes.shape[0]
@@ -764,10 +764,12 @@ class CorrelationEigenTransformLayer(layers.Layer):
                 )
 
         if need_eigenvalues or need_correlation:
-            eps = epsilon_for_dtype(dtype, self.epsilon)
-            transformed_eigenvalues = tf.math.reciprocal(
-                tf.maximum(transformed_inverse_eigenvalues, eps)
+            inverse_eigs_work, inverse_eigs_dtype = ensure_float32(transformed_inverse_eigenvalues)
+            eps = epsilon_for_dtype(inverse_eigs_work.dtype, self.epsilon)
+            transformed_eigenvalues_work = tf.math.reciprocal(
+                tf.maximum(inverse_eigs_work, eps)
             )
+            transformed_eigenvalues = restore_dtype(transformed_eigenvalues_work, inverse_eigs_dtype)
             if need_eigenvalues:
                 results['eigenvalues'] = tf.expand_dims(transformed_eigenvalues, axis=-1)
 
@@ -848,8 +850,9 @@ class LagTransformLayer(layers.Layer):
         profiles (recommended for stable optimization).
     name : str, optional
         Layer name
-    eps : float, default 1e-6
+    eps : float, optional
         Base epsilon used in positivity constraints and safe divisions.
+        If omitted, uses ``keras.backend.epsilon()``.
     variant : Literal["compact", "per_lag"], default "compact"
         Parameterization variant.
         - "compact": five-scalar parameterization with dynamic lookback support.
@@ -866,7 +869,7 @@ class LagTransformLayer(layers.Layer):
     def __init__(self,
                  warm_start: bool = True,
                  name: Optional[str] = None,
-                 eps: float = 1e-6,
+                 eps: Optional[float] = None,
                  variant: LagTransformVariant = "compact",
                  **kwargs):
         """
@@ -879,8 +882,9 @@ class LagTransformLayer(layers.Layer):
             If False, use noisier random initializations.
         name : str, optional
             Keras layer name.
-        eps : float, default 1e-6
+        eps : float, optional
             Base epsilon used in positivity constraints and safe divisions.
+            If omitted, uses ``keras.backend.epsilon()``.
         variant : Literal['compact', 'per_lag'], default 'compact'
             Lag parameterization mode:
             - ``'compact'``: five global trainable scalars (dynamic lookback support).
@@ -898,7 +902,7 @@ class LagTransformLayer(layers.Layer):
             )
 
         self.variant = variant
-        self._eps_base = float(eps if eps is not None else 1e-6)
+        self._eps_base = float(eps if eps is not None else K.epsilon())
         self.warm_start = bool(warm_start)
         self._lookback_days: Optional[int] = None
 
@@ -922,12 +926,11 @@ class LagTransformLayer(layers.Layer):
             init = initializers.Constant(mean_raw)
         else:
             # Add ±5% noise in raw space with a minimum scale for stability
-            noise_scale = max(0.05 * abs(mean_raw), 1e-6)
+            noise_scale = max(0.05 * abs(mean_raw), float(K.epsilon()))
             init = initializers.RandomNormal(mean_raw, noise_scale)
 
         return self.add_weight(
-            shape=(), 
-            dtype="float32",
+            shape=(),
             name=f"raw_{name}",
             initializer=init,
             trainable=True,
@@ -992,14 +995,12 @@ class LagTransformLayer(layers.Layer):
             alpha_profile, beta_profile = self._build_per_lag_profiles()
             self._raw_alpha = self.add_weight(
                 shape=(self._lookback_days,),
-                dtype="float32",
                 name="raw_alpha",
                 initializer=self._init_vector_param(alpha_profile),
                 trainable=True,
             )
             self._raw_beta = self.add_weight(
                 shape=(self._lookback_days,),
-                dtype="float32",
                 name="raw_beta",
                 initializer=self._init_vector_param(beta_profile),
                 trainable=True,
@@ -1055,12 +1056,14 @@ class LagTransformLayer(layers.Layer):
         tf.Tensor
             Transformed returns with the same shape and dtype as ``R``.
         """
-        dtype = R.dtype
+        R = tf.convert_to_tensor(R)
+        R_work, original_dtype = ensure_float32(R)
+        dtype = R_work.dtype
         eps_tensor = epsilon_for_dtype(dtype, self._eps_base)
 
         if self.variant == "per_lag":
-            R = self._assert_per_lag_runtime_shape(R)
-            T = tf.shape(R)[-1]
+            R_work = self._assert_per_lag_runtime_shape(R_work)
+            T = tf.shape(R_work)[-1]
 
             alpha = tf.cast(self._pos(self._raw_alpha), dtype)
             beta = tf.cast(self._pos(self._raw_beta), dtype)
@@ -1071,9 +1074,10 @@ class LagTransformLayer(layers.Layer):
 
             alpha_div_beta = tf.reshape(alpha / (beta + eps_tensor), shape_T)
             beta = tf.reshape(beta, shape_T)
-            return alpha_div_beta * tf.tanh(beta * R)
+            transformed = alpha_div_beta * tf.tanh(beta * R_work)
+            return restore_dtype(transformed, original_dtype)
 
-        T = tf.shape(R)[-1]  # Time dimension length
+        T = tf.shape(R_work)[-1]  # Time dimension length
 
         # Create time indices: t = [T, T-1, ..., 1]
         t = tf.cast(tf.range(1, T + 1), dtype)  # [1, 2, ..., T]
@@ -1091,7 +1095,7 @@ class LagTransformLayer(layers.Layer):
         beta = c2 - c3 * tf.exp(-c4 * t)  # (T,)
 
         # Reshape for broadcasting
-        ndims = tf.rank(R)
+        ndims = tf.rank(R_work)
         pad_ones = tf.ones(ndims - 1, dtype=tf.int32)
         shape_T = tf.concat([pad_ones, [T]], 0)
 
@@ -1099,8 +1103,8 @@ class LagTransformLayer(layers.Layer):
         beta = tf.reshape(beta, shape_T)
 
         # Apply transformation: alpha/beta * tanh(beta * R)
-        transformed = alpha_div_beta * tf.tanh(beta * R)
-        return transformed
+        transformed = alpha_div_beta * tf.tanh(beta * R_work)
+        return restore_dtype(transformed, original_dtype)
     
     def get_config(self) -> dict:
         config = super().get_config()
@@ -1131,7 +1135,7 @@ class RIEnetLayer(layers.Layer):
     The layer automatically scales daily returns by 252 (annualisation factor) and
     applies the following stages:
 
-    - Lag transformation with a five-parameter RIE-friendly non-linearity
+    - Lag transformation with a five-parameter non-linearity
     - Sample covariance estimation and eigenvalue decomposition
     - Recurrent cleaning of eigenvalues (GRU or LSTM; configurable direction)
     - Dense transformation of marginal volatilities
@@ -1409,7 +1413,6 @@ class RIEnetLayer(layers.Layer):
         self.lag_transform = LagTransformLayer(
             variant=self._lag_transform_variant,
             warm_start=True,
-            eps=1e-6,
             name=f"{self.name}_lag_transform"
         )
         
@@ -1436,7 +1439,6 @@ class RIEnetLayer(layers.Layer):
             recurrent_direction=self._direction,
             final_hidden_layer_sizes=[],
             output_type='correlation',
-            epsilon=1e-6,
             name=f"{self.name}_corr_eigen_transform",
         )
         
@@ -1579,7 +1581,10 @@ class RIEnetLayer(layers.Layer):
                 std_for_structural = self.std_normalization(transformed_inverse_std)
 
             if need_transformed_std or need_covariance:
-                transformed_std = tf.math.reciprocal(std_for_structural)
+                std_work, std_original_dtype = ensure_float32(std_for_structural)
+                std_eps = epsilon_for_dtype(std_work.dtype, K.epsilon())
+                transformed_std_work = tf.math.reciprocal(tf.maximum(std_work, std_eps))
+                transformed_std = restore_dtype(transformed_std_work, std_original_dtype)
 
         if need_transformed_std:
             results['transformed_std'] = transformed_std
