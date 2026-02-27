@@ -832,6 +832,32 @@ class TestIntegration:
         assert len(history.history['loss']) == 1
         assert history.history['loss'][0] is not None
 
+    def test_training_with_dynamic_time_dimension(self):
+        """Model.fit should work when the time dimension is dynamic."""
+        n_stocks = 5
+
+        inputs = tf.keras.Input(shape=(n_stocks, None), name="returns")
+        outputs = RIEnetLayer(
+            output_type="weights",
+            lag_transform_variant="compact",
+            name="rienet_dynamic_time",
+        )(inputs)
+        model = tf.keras.Model(inputs=inputs, outputs=outputs)
+        model.compile(optimizer="adam", loss="mse")
+
+        x_short = tf.random.normal((6, n_stocks, 24))
+        y_short = tf.random.normal((6, n_stocks, 1))
+        x_long = tf.random.normal((6, n_stocks, 33))
+        y_long = tf.random.normal((6, n_stocks, 1))
+
+        history_short = model.fit(x_short, y_short, epochs=1, batch_size=3, verbose=0)
+        history_long = model.fit(x_long, y_long, epochs=1, batch_size=3, verbose=0)
+
+        assert len(history_short.history["loss"]) == 1
+        assert len(history_long.history["loss"]) == 1
+        assert np.isfinite(history_short.history["loss"][0])
+        assert np.isfinite(history_long.history["loss"][0])
+
 
 class TestMixedPrecision:
     """Tests ensuring the model works under mixed precision policies."""
