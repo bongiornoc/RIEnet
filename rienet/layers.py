@@ -1,5 +1,5 @@
 """
-Backward-compatible access to the main RIEnet layer.
+Convenience access to the main RIEnet layer.
 
 Preferred location for learnable layers is `rienet.trainable_layers`.
 """

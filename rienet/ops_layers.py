@@ -336,6 +336,26 @@ class CustomNormalizationLayer(layers.Layer):
                  epsilon: Optional[float] = None,
                  name: Optional[str] = None,
                  **kwargs):
+        """
+        Initialize the normalization layer.
+
+        Parameters
+        ----------
+        mode : Literal['sum', 'inverse'], default 'sum'
+            Normalization mode:
+            - ``'sum'``: rescales values so the sum along ``axis`` equals the axis size.
+            - ``'inverse'``: rescales values so the mean of ``x^{-p}`` along ``axis`` is 1.
+        axis : int, default -2
+            Axis used for normalization.
+        inverse_power : float, default 1.0
+            Inverse exponent ``p`` used only when ``mode='inverse'``.
+        epsilon : float, optional
+            Numerical epsilon for safe divisions and powers.
+        name : str, optional
+            Keras layer name.
+        **kwargs : dict
+            Additional arguments passed to ``tf.keras.layers.Layer``.
+        """
         if name is None:
             raise ValueError("CustomNormalizationLayer must have a name.")
         super().__init__(name=name, **kwargs)

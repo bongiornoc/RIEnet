@@ -1,5 +1,5 @@
 """
-Backward-compatible custom layer exports.
+Convenience exports for RIEnet layers.
 
 Preferred modules:
 - `rienet.trainable_layers` for layers with trainable parameters.

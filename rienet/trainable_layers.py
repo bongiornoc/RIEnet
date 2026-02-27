@@ -200,7 +200,9 @@ class DeepRecurrentLayer(layers.Layer):
     final_activation : str, default "softplus"
         Activation for final dense layer
     final_hidden_layer_sizes : list of int, default []
-        Sizes of dense layers after RNN
+        Hidden sizes of the post-RNN MLP head before the final 1-unit output.
+        For example ``[32, 8]`` builds a two-layer MLP with 32 then 8 units.
+        ``[]`` means no additional hidden MLP layer.
     final_hidden_activation : str, default "leaky_relu"
         Activation for final hidden layers
     direction : Literal['bidirectional', 'forward', 'backward'], default 'bidirectional'
@@ -228,6 +230,46 @@ class DeepRecurrentLayer(layers.Layer):
                  normalize: Optional[NormalizationModeType] = None,
                  normalize_inverse_power: float = 1.0,
                  name: Optional[str] = None, **kwargs):
+        """
+        Initialize a stacked recurrent block followed by an MLP head.
+
+        Parameters
+        ----------
+        recurrent_layer_sizes : list of int
+            Number of units for each recurrent layer.
+        final_activation : str, default "softplus"
+            Activation used by the final 1-unit output layer.
+        final_hidden_layer_sizes : list of int, default []
+            Hidden sizes for the post-RNN MLP head.
+            Example: ``[32, 8]`` means two dense hidden layers with 32 and 8 units.
+            ``[]`` means the output layer is connected directly to the RNN output.
+        final_hidden_activation : str, default "leaky_relu"
+            Activation used by hidden layers in the MLP head.
+        direction : Literal['bidirectional', 'forward', 'backward'], default 'bidirectional'
+            RNN direction mode:
+            - ``'bidirectional'``: process sequence in both directions and concatenate.
+            - ``'forward'``: process left-to-right only.
+            - ``'backward'``: process right-to-left only.
+        dropout : float, default 0.0
+            Input dropout used in recurrent layers and MLP hidden layers.
+        recurrent_dropout : float, default 0.0
+            Recurrent-state dropout used inside each recurrent cell.
+        recurrent_model : Literal['LSTM', 'GRU'], default 'LSTM'
+            Recurrent cell type:
+            - ``'LSTM'``: Long Short-Term Memory cell.
+            - ``'GRU'``: Gated Recurrent Unit cell.
+        normalize : Literal['inverse', 'sum'] or None, optional
+            Optional output normalization applied along the time axis:
+            - ``None``: do not normalize.
+            - ``'sum'``: normalize by sum.
+            - ``'inverse'``: inverse-power normalization.
+        normalize_inverse_power : float, default 1.0
+            Inverse normalization exponent, used only when ``normalize='inverse'``.
+        name : str, optional
+            Keras layer name.
+        **kwargs : dict
+            Additional arguments passed to ``tf.keras.layers.Layer``.
+        """
         if name is None:
             raise ValueError("DeepRecurrentLayer must have a name.")
         super().__init__(name=name, **kwargs)
@@ -391,7 +433,8 @@ class CorrelationEigenTransformLayer(layers.Layer):
     recurrent_direction : Literal['bidirectional', 'forward', 'backward'], default 'bidirectional'
         Direction for recurrent processing.
     final_hidden_layer_sizes : tuple of int, default ()
-        Optional dense hidden layers after the recurrent stack.
+        Hidden sizes of the post-recurrent MLP head used to transform eigenvalue
+        features before the final scalar output.
     final_hidden_activation : str, default 'leaky_relu'
         Activation for optional dense hidden layers.
     output_type : CorrelationTransformOutputType, default 'correlation'
@@ -437,8 +480,44 @@ class CorrelationEigenTransformLayer(layers.Layer):
                  epsilon: Optional[float] = None,
                  name: Optional[str] = None,
                  **kwargs):
-        if name is None:
-            raise ValueError("CorrelationEigenTransformLayer must have a name.")
+        """
+        Initialize the correlation-eigenvalue cleaning layer.
+
+        Parameters
+        ----------
+        recurrent_layer_sizes : tuple of int, default (16,)
+            Units for each recurrent layer in the eigenvalue cleaning block.
+        recurrent_cell : Literal['GRU', 'LSTM'], default 'GRU'
+            Recurrent cell type used in the cleaning block:
+            - ``'GRU'``: Gated Recurrent Unit.
+            - ``'LSTM'``: Long Short-Term Memory.
+        recurrent_direction : Literal['bidirectional', 'forward', 'backward'], default 'bidirectional'
+            Sequence direction mode:
+            - ``'bidirectional'``: forward + backward processing.
+            - ``'forward'``: forward only.
+            - ``'backward'``: backward only.
+        final_hidden_layer_sizes : tuple of int, default ()
+            Hidden sizes of the post-recurrent MLP head.
+            Example: ``(32, 8)`` adds two hidden dense layers (32 then 8 units).
+            ``()`` means no extra hidden MLP layer.
+        final_hidden_activation : str, default 'leaky_relu'
+            Activation for hidden layers in the post-recurrent MLP head.
+        output_type : CorrelationTransformOutputType, default 'correlation'
+            Requested output component(s). Allowed values:
+            - ``'correlation'``: cleaned correlation matrix.
+            - ``'inverse_correlation'``: cleaned inverse correlation matrix.
+            - ``'eigenvalues'``: cleaned (non-inverse) eigenvalues.
+            - ``'eigenvectors'``: eigenvectors from decomposition.
+            - ``'inverse_eigenvalues'``: transformed inverse eigenvalues.
+            - ``'all'``: all components above.
+            A sequence can be passed to request multiple components.
+        epsilon : float, optional
+            Numerical epsilon used in safe reciprocal operations.
+        name : str, optional
+            Keras layer name. If omitted, Keras auto-generates one.
+        **kwargs : dict
+            Additional arguments passed to ``tf.keras.layers.Layer``.
+        """
         super().__init__(name=name, **kwargs)
 
         recurrent_layer_sizes = list(recurrent_layer_sizes)
@@ -715,10 +794,13 @@ class CorrelationEigenTransformLayer(layers.Layer):
         return results
 
     def compute_output_shape(self, input_shape: Tuple[int, ...]) -> Tuple[int, ...]:
-        if isinstance(input_shape, (list, tuple)) and input_shape:
-            corr_shape = tf.TensorShape(input_shape[0]).as_list()
-        else:
-            corr_shape = tf.TensorShape(input_shape).as_list()
+        is_multi_input = (
+            isinstance(input_shape, (list, tuple))
+            and bool(input_shape)
+            and isinstance(input_shape[0], (list, tuple, tf.TensorShape))
+        )
+        corr_source = input_shape[0] if is_multi_input else input_shape
+        corr_shape = tf.TensorShape(corr_source).as_list()
 
         batch_size = corr_shape[0]
         n_assets = corr_shape[-1]
@@ -747,9 +829,6 @@ class CorrelationEigenTransformLayer(layers.Layer):
 
     @classmethod
     def from_config(cls, config: dict):
-        config = dict(config)
-        # Backward compatibility for older serialized configs.
-        config.pop('normalize_inverse_power', None)
         return cls(**config)
 
 
@@ -790,6 +869,26 @@ class LagTransformLayer(layers.Layer):
                  eps: float = 1e-6,
                  variant: LagTransformVariant = "compact",
                  **kwargs):
+        """
+        Initialize the lag-transform layer.
+
+        Parameters
+        ----------
+        warm_start : bool, default True
+            If True, initialize parameters near smooth deterministic profiles.
+            If False, use noisier random initializations.
+        name : str, optional
+            Keras layer name.
+        eps : float, default 1e-6
+            Base epsilon used in positivity constraints and safe divisions.
+        variant : Literal['compact', 'per_lag'], default 'compact'
+            Lag parameterization mode:
+            - ``'compact'``: five global trainable scalars (dynamic lookback support).
+            - ``'per_lag'``: one trainable alpha/beta pair per lag
+              (requires static ``input_shape[-1]`` at first build).
+        **kwargs : dict
+            Additional arguments passed to ``tf.keras.layers.Layer``.
+        """
         super().__init__(name=name, **kwargs)
 
         variant = str(variant)
@@ -800,8 +899,6 @@ class LagTransformLayer(layers.Layer):
 
         self.variant = variant
         self._eps_base = float(eps if eps is not None else 1e-6)
-        # Retain the historical attribute name for backwards compatibility.
-        self.eps = self._eps_base
         self.warm_start = bool(warm_start)
         self._lookback_days: Optional[int] = None
 
@@ -1016,9 +1113,6 @@ class LagTransformLayer(layers.Layer):
 
     @classmethod
     def from_config(cls, config: dict):
-        config = dict(config)
-        # Backward compatibility for previously serialized configs.
-        config.pop('lookback_days', None)
         return cls(**config)
 
 
@@ -1070,7 +1164,7 @@ class RIEnetLayer(layers.Layer):
         Allowed values are:
         - 'n_stocks': number of assets in the cross-section.
         - 'n_days': lookback length.
-        - 'q': ratio n_stocks / n_days.
+        - 'q': ratio n_days / n_stocks.
         - 'rsqrt_n_days': reciprocal sqrt of lookback length.
         Defaults to ('n_stocks', 'n_days', 'q').
     lag_transform_variant : Literal['compact', 'per_lag'], default 'compact'
@@ -1150,7 +1244,17 @@ class RIEnetLayer(layers.Layer):
         Parameters
         ----------
         output_type : OutputType, default 'weights'
-            Requested output component(s).
+            Requested output component(s). Allowed values:
+            - ``'weights'``: GMV portfolio weights.
+            - ``'precision'``: cleaned precision matrix.
+            - ``'covariance'``: cleaned covariance matrix.
+            - ``'correlation'``: cleaned correlation matrix.
+            - ``'input_transformed'``: lag-transformed returns.
+            - ``'eigenvalues'``: cleaned eigenvalues (non-inverse).
+            - ``'eigenvectors'``: eigenvectors from decomposition.
+            - ``'transformed_std'``: transformed standard deviations (non-inverse).
+            - ``'all'``: all components above.
+            A sequence can be passed to request multiple components.
         recurrent_layer_sizes : Sequence[int], optional (default (16,))
             Hidden sizes of the recurrent cleaning block (defaults to [16]).
             If multiple integers are supplied (for example [32, 16]) the recurrent
@@ -1161,19 +1265,31 @@ class RIEnetLayer(layers.Layer):
             A sequence such as [64, 8] will be interpreted as two dense hidden layers
             with 64 then 8 units respectively.
         recurrent_cell : Literal['GRU', 'LSTM'], default 'GRU'
-            Type of recurrent cell to use ('GRU' or 'LSTM').
+            Recurrent cell type used in eigenvalue cleaning:
+            - ``'GRU'``: Gated Recurrent Unit.
+            - ``'LSTM'``: Long Short-Term Memory.
         recurrent_direction : Literal['bidirectional', 'forward', 'backward'], default 'bidirectional'
-            Direction used by the recurrent cleaning block.
+            Direction mode of the recurrent cleaning block:
+            - ``'bidirectional'``: process the sequence in both directions.
+            - ``'forward'``: process forward only.
+            - ``'backward'``: process backward only.
         dimensional_features : Sequence[Literal['n_stocks', 'n_days', 'q', 'rsqrt_n_days']], optional
-            Additional features fed to ``DimensionAwareLayer``. Allowed values:
-            'n_stocks', 'n_days', 'q', 'rsqrt_n_days'.
+            Additional features concatenated before eigenvalue cleaning:
+            - ``'n_stocks'``: number of assets in the universe.
+            - ``'n_days'``: lookback length.
+            - ``'q'``: ratio ``n_days / n_stocks``.
+            - ``'rsqrt_n_days'``: ``1 / sqrt(n_days)``.
+        normalize_transformed_variance : bool, default True
+            If True, rescales transformed inverse volatilities so that the implied
+            covariance diagonal is centered around 1.
         lag_transform_variant : Literal['compact', 'per_lag'], default 'compact'
-            Lag transform parameterization passed to ``LagTransformLayer``:
-            'compact' or 'per_lag'.
+            Lag-transform parameterization:
+            - ``'compact'``: five global trainable scalars.
+            - ``'per_lag'``: one trainable parameter pair per lag.
         name : str, optional
-            Layer name
+            Keras layer name.
         **kwargs : dict
-            Additional arguments for base Layer
+            Additional arguments passed to ``tf.keras.layers.Layer``.
         """
         super().__init__(name=name, **kwargs)
 
@@ -1229,18 +1345,16 @@ class RIEnetLayer(layers.Layer):
         self.output_type = components[0] if len(components) == 1 else tuple(components)
 
         if recurrent_layer_sizes is None:
-            # backward-compatible fallback if caller passes None
-            recurrent_layer_sizes = [16]
-        else:
-            recurrent_layer_sizes = list(recurrent_layer_sizes)
-            if not recurrent_layer_sizes:
-                raise ValueError("recurrent_layer_sizes must contain at least one positive integer")
+            raise ValueError("recurrent_layer_sizes cannot be None; pass a non-empty sequence of positive integers.")
+        recurrent_layer_sizes = list(recurrent_layer_sizes)
+        if not recurrent_layer_sizes:
+            raise ValueError("recurrent_layer_sizes must contain at least one positive integer")
+
         if std_hidden_layer_sizes is None:
-            std_hidden_layer_sizes = [8]
-        else:
-            std_hidden_layer_sizes = list(std_hidden_layer_sizes)
-            if not std_hidden_layer_sizes:
-                raise ValueError("std_hidden_layer_sizes must contain at least one positive integer")
+            raise ValueError("std_hidden_layer_sizes cannot be None; pass a non-empty sequence of positive integers.")
+        std_hidden_layer_sizes = list(std_hidden_layer_sizes)
+        if not std_hidden_layer_sizes:
+            raise ValueError("std_hidden_layer_sizes must contain at least one positive integer")
 
         for size in recurrent_layer_sizes:
             if size <= 0:
@@ -1599,9 +1713,6 @@ class RIEnetLayer(layers.Layer):
         RIEnetLayer
             Layer instance
         """
-        config = dict(config)
-        # Backward compatibility for previously serialized configs.
-        config.pop('lookback_days', None)
         return cls(**config)
         
     def compute_output_shape(self, input_shape: Tuple[int, ...]) -> Tuple[int, ...]:
