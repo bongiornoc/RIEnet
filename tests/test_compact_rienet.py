@@ -858,6 +858,55 @@ class TestIntegration:
         assert np.isfinite(history_short.history["loss"][0])
         assert np.isfinite(history_long.history["loss"][0])
 
+    def test_training_with_dynamic_stocks_and_time_dimensions(self):
+        """Model.fit should work with both n_stocks and n_days dynamic."""
+        inputs = tf.keras.Input(shape=(None, None), name="returns_dynamic_both")
+        outputs = RIEnetLayer(
+            output_type="weights",
+            lag_transform_variant="compact",
+            name="rienet_dynamic_both",
+        )(inputs)
+        model = tf.keras.Model(inputs=inputs, outputs=outputs)
+        model.compile(optimizer="adam", loss="mse")
+
+        x_first = tf.random.normal((6, 4, 24))
+        y_first = tf.random.normal((6, 4, 1))
+        x_second = tf.random.normal((6, 7, 31))
+        y_second = tf.random.normal((6, 7, 1))
+
+        history_first = model.fit(x_first, y_first, epochs=1, batch_size=3, verbose=0)
+        history_second = model.fit(x_second, y_second, epochs=1, batch_size=3, verbose=0)
+
+        assert len(history_first.history["loss"]) == 1
+        assert len(history_second.history["loss"]) == 1
+        assert np.isfinite(history_first.history["loss"][0])
+        assert np.isfinite(history_second.history["loss"][0])
+
+    def test_training_with_dynamic_stocks_static_time_per_lag(self):
+        """per_lag variant should train with dynamic n_stocks and static n_days."""
+        n_days = 20
+        inputs = tf.keras.Input(shape=(None, n_days), name="returns_dynamic_stocks")
+        outputs = RIEnetLayer(
+            output_type="weights",
+            lag_transform_variant="per_lag",
+            name="rienet_dynamic_stocks_per_lag",
+        )(inputs)
+        model = tf.keras.Model(inputs=inputs, outputs=outputs)
+        model.compile(optimizer="adam", loss="mse")
+
+        x_first = tf.random.normal((6, 5, n_days))
+        y_first = tf.random.normal((6, 5, 1))
+        x_second = tf.random.normal((6, 9, n_days))
+        y_second = tf.random.normal((6, 9, 1))
+
+        history_first = model.fit(x_first, y_first, epochs=1, batch_size=3, verbose=0)
+        history_second = model.fit(x_second, y_second, epochs=1, batch_size=3, verbose=0)
+
+        assert len(history_first.history["loss"]) == 1
+        assert len(history_second.history["loss"]) == 1
+        assert np.isfinite(history_first.history["loss"][0])
+        assert np.isfinite(history_second.history["loss"][0])
+
 
 class TestMixedPrecision:
     """Tests ensuring the model works under mixed precision policies."""
