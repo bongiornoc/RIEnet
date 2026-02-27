@@ -4,5 +4,3 @@ include pyproject.toml
 recursive-include rienet *.py
 recursive-exclude * __pycache__
 recursive-exclude * *.py[co]
-exclude .gitignore
-exclude .github
