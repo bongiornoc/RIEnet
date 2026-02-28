@@ -1240,6 +1240,7 @@ class RIEnetLayer(layers.Layer):
                  dimensional_features: Sequence[DimensionalFeature] = ('n_stocks', 'n_days', 'q'),
                  normalize_transformed_variance: bool = True,
                  lag_transform_variant: LagTransformVariant = 'compact',
+                 annualization_factor: float = 252.0,
                  name: Optional[str] = None,
                  **kwargs):
         """
@@ -1290,6 +1291,8 @@ class RIEnetLayer(layers.Layer):
             Lag-transform parameterization:
             - ``'compact'``: five global trainable scalars.
             - ``'per_lag'``: one trainable parameter pair per lag.
+        annualization_factor : float, default 252.0
+            Factor used to scale daily returns for numerical stability (e.g. 252 for trading days).
         name : str, optional
             Keras layer name.
         **kwargs : dict
@@ -1399,7 +1402,7 @@ class RIEnetLayer(layers.Layer):
         self._recurrent_model = normalized_cell
         self._direction = normalized_direction
         self._dimensional_features = deduped_features
-        self._annualization_factor = 252.0
+        self._annualization_factor = annualization_factor
         self._normalize_variance = bool(normalize_transformed_variance)
         self._lag_transform_variant = lag_transform_variant
         self.input_spec = layers.InputSpec(ndim=3)
