@@ -204,6 +204,19 @@ class TestRIEnetLayer:
         assert outputs['eigenvectors'].shape == (batch_size, n_stocks, n_stocks)
         assert outputs['transformed_std'].shape == (batch_size, n_stocks, 1)
 
+    def test_eigen_outputs_skip_std_transform_allocation(self):
+        """Eigen-only outputs should not allocate std_transform trainable layers."""
+        layer = RIEnetLayer(output_type=['eigenvalues', 'eigenvectors'])
+
+        batch_size, n_stocks, n_days = 2, 5, 20
+        inputs = tf.random.normal((batch_size, n_stocks, n_days))
+        outputs = layer(inputs)
+
+        assert isinstance(outputs, dict)
+        assert set(outputs.keys()) == {'eigenvalues', 'eigenvectors'}
+        assert layer.std_transform is None
+        assert all('std_transform' not in var.name for var in layer.trainable_variables)
+
     def test_all_output_type_includes_new_components(self):
         """The special 'all' output token should include all exposed components."""
         layer = RIEnetLayer(output_type='all')

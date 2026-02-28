@@ -1350,6 +1350,41 @@ class RIEnetLayer(layers.Layer):
 
         self.output_components = tuple(components)
         self.output_type = components[0] if len(components) == 1 else tuple(components)
+        self._need_precision = 'precision' in self.output_components
+        self._need_covariance = 'covariance' in self.output_components
+        self._need_correlation = 'correlation' in self.output_components
+        self._need_weights = 'weights' in self.output_components
+        self._need_eigenvalues = 'eigenvalues' in self.output_components
+        self._need_eigenvectors = 'eigenvectors' in self.output_components
+        self._need_transformed_std = 'transformed_std' in self.output_components
+        self._need_structural_outputs = (
+            self._need_precision
+            or self._need_covariance
+            or self._need_correlation
+            or self._need_weights
+        )
+        self._need_spectral_outputs = (
+            self._need_eigenvalues
+            or self._need_eigenvectors
+            or self._need_transformed_std
+        )
+        self._need_pipeline_outputs = (
+            self._need_structural_outputs or self._need_spectral_outputs
+        )
+        self._need_inverse_std_branch = (
+            self._need_precision
+            or self._need_covariance
+            or self._need_weights
+            or self._need_transformed_std
+        )
+        self._need_spectral_branch = (
+            self._need_precision
+            or self._need_covariance
+            or self._need_correlation
+            or self._need_weights
+            or self._need_eigenvalues
+            or self._need_eigenvectors
+        )
 
         if recurrent_layer_sizes is None:
             raise ValueError("recurrent_layer_sizes cannot be None; pass a non-empty sequence of positive integers.")
@@ -1434,25 +1469,31 @@ class RIEnetLayer(layers.Layer):
             features=self._dimensional_features,
             name=f"{self.name}_dimension_aware"
         )
-        
+
         # Correlation transformation in eigen-space
-        self.correlation_eigen_transform = CorrelationEigenTransformLayer(
-            recurrent_layer_sizes=self._recurrent_layer_sizes,
-            recurrent_cell=self._recurrent_model,
-            recurrent_direction=self._direction,
-            final_hidden_layer_sizes=[],
-            output_type='correlation',
-            name=f"{self.name}_corr_eigen_transform",
-        )
-        
+        if self._need_spectral_branch:
+            self.correlation_eigen_transform = CorrelationEigenTransformLayer(
+                recurrent_layer_sizes=self._recurrent_layer_sizes,
+                recurrent_cell=self._recurrent_model,
+                recurrent_direction=self._direction,
+                final_hidden_layer_sizes=[],
+                output_type='correlation',
+                name=f"{self.name}_corr_eigen_transform",
+            )
+        else:
+            self.correlation_eigen_transform = None
+
         # Standard deviation transformation
-        self.std_transform = DeepLayer(
-            hidden_layer_sizes=self._std_hidden_layer_sizes + [1],
-            last_activation='softplus',
-            name=f"{self.name}_std_transform"
-        )
-        
-        if self._normalize_variance:
+        if self._need_inverse_std_branch:
+            self.std_transform = DeepLayer(
+                hidden_layer_sizes=self._std_hidden_layer_sizes + [1],
+                last_activation='softplus',
+                name=f"{self.name}_std_transform"
+            )
+        else:
+            self.std_transform = None
+
+        if self._normalize_variance and self._need_inverse_std_branch:
             self.std_normalization = CustomNormalizationLayer(
                 axis=-2,
                 mode='inverse',
@@ -1461,23 +1502,33 @@ class RIEnetLayer(layers.Layer):
             )
         else:
             self.std_normalization = None
-        
+
         # Matrix reconstruction (see Eq. 13-15)
-        self.eigenvector_rescaler = EigenvectorRescalingLayer(
-            name=f"{self.name}_eigenvector_rescaler"
-        )
-        self.eigen_product = EigenProductLayer(
-            name=f"{self.name}_eigen_product"
-        )
+        if self._need_precision:
+            self.eigenvector_rescaler = EigenvectorRescalingLayer(
+                name=f"{self.name}_eigenvector_rescaler"
+            )
+            self.eigen_product = EigenProductLayer(
+                name=f"{self.name}_eigen_product"
+            )
+        else:
+            self.eigenvector_rescaler = None
+            self.eigen_product = None
 
-        self.outer_product = CovarianceLayer(
-            normalize=False,
-            name=f"{self.name}_inverse_scale_outer"
-        )
+        if self._need_precision or self._need_covariance:
+            self.outer_product = CovarianceLayer(
+                normalize=False,
+                name=f"{self.name}_inverse_scale_outer"
+            )
+        else:
+            self.outer_product = None
 
-        self.weight_layer = EigenWeightsLayer(
-            name=f"{self.name}_weights"
-        )
+        if self._need_weights:
+            self.weight_layer = EigenWeightsLayer(
+                name=f"{self.name}_weights"
+            )
+        else:
+            self.weight_layer = None
 
     def build(self, input_shape: Tuple[int, int, int]) -> None:
         """Build sub-layers once input dimensionality is known."""
@@ -1496,17 +1547,36 @@ class RIEnetLayer(layers.Layer):
         eigenvalues_vector_shape = tf.TensorShape([batch, n_stocks])
 
         self.lag_transform.build(input_shape)
-        self.std_layer.build(input_shape)
-        self.covariance_layer.build(input_shape)
-        self.dimension_aware.build([input_shape, covariance_shape])
-        self.correlation_eigen_transform.build([covariance_shape, attributes_shape])
-        self.std_transform.build(std_shape)
-        if self.std_normalization is not None:
-            self.std_normalization.build(std_shape)
-        self.eigenvector_rescaler.build([covariance_shape, eigenvalues_vector_shape])
-        self.eigen_product.build([eigenvalues_vector_shape, covariance_shape])
-        self.outer_product.build(std_shape)
-        self.weight_layer.build([covariance_shape, eigenvalues_vector_shape, std_shape])
+        if self._need_pipeline_outputs:
+            self.std_layer.build(input_shape)
+        if self._need_spectral_branch:
+            self.covariance_layer.build(input_shape)
+            if self._dimensional_features:
+                self.dimension_aware.build([input_shape, covariance_shape])
+            if self.correlation_eigen_transform is None:
+                raise RuntimeError("Internal error: missing correlation_eigen_transform.")
+            self.correlation_eigen_transform.build([covariance_shape, attributes_shape])
+        if self._need_inverse_std_branch:
+            if self.std_transform is None:
+                raise RuntimeError("Internal error: missing std_transform.")
+            self.std_transform.build(std_shape)
+            if self.std_normalization is not None:
+                self.std_normalization.build(std_shape)
+        if self._need_precision:
+            if self.eigenvector_rescaler is None or self.eigen_product is None:
+                raise RuntimeError(
+                    "Internal error: missing precision reconstruction layers."
+                )
+            self.eigenvector_rescaler.build([covariance_shape, eigenvalues_vector_shape])
+            self.eigen_product.build([eigenvalues_vector_shape, covariance_shape])
+        if self._need_precision or self._need_covariance:
+            if self.outer_product is None:
+                raise RuntimeError("Internal error: missing outer_product layer.")
+            self.outer_product.build(std_shape)
+        if self._need_weights:
+            if self.weight_layer is None:
+                raise RuntimeError("Internal error: missing weight_layer.")
+            self.weight_layer.build([covariance_shape, eigenvalues_vector_shape, std_shape])
 
         super().build(input_shape)
         
@@ -1540,17 +1610,15 @@ class RIEnetLayer(layers.Layer):
             - ``transformed_std``: ``(batch, n_stocks, 1)`` non-inverse transformed std
             - ``input_transformed``: ``(batch, n_stocks, n_days)``
         """
-        need_precision = 'precision' in self.output_components
-        need_covariance = 'covariance' in self.output_components
-        need_correlation = 'correlation' in self.output_components
-        need_weights = 'weights' in self.output_components
-        need_eigenvalues = 'eigenvalues' in self.output_components
-        need_eigenvectors = 'eigenvectors' in self.output_components
-        need_transformed_std = 'transformed_std' in self.output_components
+        need_precision = self._need_precision
+        need_covariance = self._need_covariance
+        need_correlation = self._need_correlation
+        need_weights = self._need_weights
+        need_eigenvalues = self._need_eigenvalues
+        need_eigenvectors = self._need_eigenvectors
+        need_transformed_std = self._need_transformed_std
 
-        need_structural_outputs = need_precision or need_covariance or need_correlation or need_weights
-        need_spectral_outputs = need_eigenvalues or need_eigenvectors or need_transformed_std
-        need_pipeline_outputs = need_structural_outputs or need_spectral_outputs
+        need_pipeline_outputs = self._need_pipeline_outputs
 
         # Scale inputs by annualization factor
         scaled_inputs = inputs * self._annualization_factor
@@ -1578,6 +1646,8 @@ class RIEnetLayer(layers.Layer):
         std_for_structural = None
         transformed_std = None
         if need_inverse_std:
+            if self.std_transform is None:
+                raise RuntimeError("Internal error: missing std_transform.")
             transformed_inverse_std = self.std_transform(std)
             std_for_structural = transformed_inverse_std
             if self.std_normalization is not None and need_inverse_std:
@@ -1592,7 +1662,7 @@ class RIEnetLayer(layers.Layer):
         if need_transformed_std:
             results['transformed_std'] = transformed_std
 
-        need_spectral_branch = need_precision or need_covariance or need_correlation or need_weights or need_eigenvalues or need_eigenvectors
+        need_spectral_branch = self._need_spectral_branch
         if not need_spectral_branch:
             return (
                 results[self.output_components[0]]
@@ -1627,6 +1697,8 @@ class RIEnetLayer(layers.Layer):
                 deduped_components.append(component)
                 seen_components.add(component)
 
+        if self.correlation_eigen_transform is None:
+            raise RuntimeError("Internal error: missing correlation_eigen_transform.")
         spectral_outputs = self.correlation_eigen_transform(
             correlation_matrix,
             attributes=attributes,
@@ -1653,6 +1725,12 @@ class RIEnetLayer(layers.Layer):
         # Precision-specific reconstruction
         inverse_correlation = None
         if need_precision:
+            if self.eigenvector_rescaler is None or self.eigen_product is None:
+                raise RuntimeError(
+                    "Internal error: missing precision reconstruction layers."
+                )
+            if self.outer_product is None:
+                raise RuntimeError("Internal error: missing outer_product layer.")
             inverse_eigenvectors = self.eigenvector_rescaler(
                 [eigenvectors, transformed_inverse_eigenvalues]
             )
@@ -1664,6 +1742,8 @@ class RIEnetLayer(layers.Layer):
             results['precision'] = precision_matrix
 
         if need_covariance:
+            if self.outer_product is None:
+                raise RuntimeError("Internal error: missing outer_product layer.")
             volatility_matrix = self.outer_product(transformed_std)
             covariance = cleaned_correlation * volatility_matrix
             results['covariance'] = covariance
@@ -1672,6 +1752,8 @@ class RIEnetLayer(layers.Layer):
             results['correlation'] = cleaned_correlation
 
         if need_weights:
+            if self.weight_layer is None:
+                raise RuntimeError("Internal error: missing weight_layer.")
             weights = self.weight_layer(
                 eigenvectors=eigenvectors,
                 inverse_eigenvalues=transformed_inverse_eigenvalues,
