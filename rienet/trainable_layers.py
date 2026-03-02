@@ -618,8 +618,118 @@ class CorrelationEigenTransformLayer(layers.Layer):
                 seen.add(entry)
         return deduped
 
-    def build(self, input_shape) -> None:
-        super().build(input_shape)
+    def build(self, correlation_matrix_shape, attributes_shape=None) -> None:
+        """
+        Build all internal sublayers with explicit shapes.
+
+        Parameters
+        ----------
+        correlation_matrix_shape : tuple, TensorShape, or list/tuple of shapes
+            Correlation matrix shape ``(batch, n_assets, n_assets)``. For backward
+            compatibility this can also be ``[correlation_shape, attributes_shape]``.
+        attributes_shape : tuple or TensorShape, optional
+            Optional attributes shape:
+            - ``(batch, k)`` for batch-level attributes.
+            - ``(batch, n_assets, k)`` for per-asset attributes.
+        """
+        raw_input_shape = correlation_matrix_shape
+
+        corr_shape_source = correlation_matrix_shape
+        attrs_shape_source = attributes_shape
+
+        # Backward compatibility for callers that pass [corr_shape, attrs_shape].
+        is_shape_pair = (
+            attributes_shape is None
+            and isinstance(correlation_matrix_shape, (list, tuple))
+            and len(correlation_matrix_shape) in {1, 2}
+            and isinstance(correlation_matrix_shape[0], (list, tuple, tf.TensorShape))
+        )
+        if is_shape_pair:
+            corr_shape_source = correlation_matrix_shape[0]
+            if len(correlation_matrix_shape) == 2:
+                attrs_shape_source = correlation_matrix_shape[1]
+
+        corr_shape = tf.TensorShape(corr_shape_source)
+        if corr_shape.rank != 3:
+            raise ValueError(
+                "correlation_matrix must have shape (batch, n_assets, n_assets)."
+            )
+
+        corr_assets_row = corr_shape[-2]
+        corr_assets_col = corr_shape[-1]
+        if (
+            corr_assets_row is not None
+            and corr_assets_col is not None
+            and int(corr_assets_row) != int(corr_assets_col)
+        ):
+            raise ValueError(
+                "correlation_matrix must be square on the last two dimensions: "
+                f"got {corr_assets_row} and {corr_assets_col}."
+            )
+
+        batch_size = corr_shape[0]
+        n_assets = corr_shape[-1]
+        attrs_shape = None
+        attr_width = 0
+
+        if attrs_shape_source is not None:
+            attrs_shape = tf.TensorShape(attrs_shape_source)
+            if attrs_shape.rank not in {2, 3}:
+                raise ValueError(
+                    "attributes must have shape (batch, k) or (batch, n_assets, k)."
+                )
+
+            corr_batch = corr_shape[0]
+            attrs_batch = attrs_shape[0]
+            if (
+                corr_batch is not None
+                and attrs_batch is not None
+                and int(corr_batch) != int(attrs_batch)
+            ):
+                raise ValueError(
+                    "Batch mismatch between correlation_matrix and attributes: "
+                    f"correlation_matrix batch={corr_batch}, attributes batch={attrs_batch}."
+                )
+
+            if attrs_shape.rank == 3:
+                attrs_assets = attrs_shape[1]
+                if (
+                    n_assets is not None
+                    and attrs_assets is not None
+                    and int(n_assets) != int(attrs_assets)
+                ):
+                    raise ValueError(
+                        "Asset-dimension mismatch between correlation_matrix and attributes: "
+                        f"correlation_matrix assets={n_assets}, attributes assets={attrs_assets}."
+                    )
+
+            attr_width = attrs_shape[-1]
+            if attr_width is None:
+                raise ValueError(
+                    "attributes last dimension must be statically known at build time."
+                )
+            attr_width = int(attr_width)
+
+        feature_width = 1 + attr_width
+        self._feature_width = feature_width
+
+        eigenvalue_feature_shape = tf.TensorShape([batch_size, n_assets, feature_width])
+        eigenvalue_vector_shape = tf.TensorShape([batch_size, n_assets])
+
+        self.spectral_decomp.build(corr_shape)
+        self.eigenvalue_transform.build(eigenvalue_feature_shape)
+        self.eigenvector_rescaler.build([corr_shape, eigenvalue_vector_shape])
+        self.correlation_product.build([eigenvalue_vector_shape, corr_shape])
+
+        built_input_shape = raw_input_shape
+        if is_shape_pair:
+            built_input_shape = [corr_shape] if attrs_shape is None else [corr_shape, attrs_shape]
+        elif attrs_shape is not None:
+            built_input_shape = [corr_shape, attrs_shape]
+        else:
+            built_input_shape = corr_shape
+
+        super().build(built_input_shape)
 
     def call(self,
              correlation_matrix: tf.Tensor,
@@ -1555,7 +1665,7 @@ class RIEnetLayer(layers.Layer):
                 self.dimension_aware.build([input_shape, covariance_shape])
             if self.correlation_eigen_transform is None:
                 raise RuntimeError("Internal error: missing correlation_eigen_transform.")
-            self.correlation_eigen_transform.build([covariance_shape, attributes_shape])
+            self.correlation_eigen_transform.build(covariance_shape, attributes_shape)
         if self._need_inverse_std_branch:
             if self.std_transform is None:
                 raise RuntimeError("Internal error: missing std_transform.")

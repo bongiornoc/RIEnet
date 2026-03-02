@@ -59,3 +59,28 @@ def test_lag_transform_model_roundtrip_keras(tmp_path):
     x = tf.random.normal((2, 6, 24))
     y = loaded(x)
     assert y.shape == (2, 6, 24)
+
+
+def test_rienet_load_weights_before_first_forward_has_no_unbuilt_spectral_layers(tmp_path):
+    def _make_model():
+        inputs = tf.keras.Input(shape=(6, 24), name="returns")
+        outputs = RIEnetLayer(output_type=["correlation"], name="rienet_layer")(inputs)
+        return tf.keras.Model(inputs=inputs, outputs=outputs, name="rienet_model")
+
+    source = _make_model()
+    weights_path = tmp_path / "rienet_corr.weights.h5"
+    source.save_weights(weights_path)
+
+    target = _make_model()
+    rienet_layer = next(layer for layer in target.layers if isinstance(layer, RIEnetLayer))
+    corr_transform = rienet_layer.correlation_eigen_transform
+    assert corr_transform is not None
+
+    unbuilt_spectral_layers = [
+        sublayer.name
+        for sublayer in corr_transform._flatten_layers(include_self=False, recursive=True)
+        if not sublayer.built
+    ]
+    assert unbuilt_spectral_layers == []
+
+    target.load_weights(weights_path)
