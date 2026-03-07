@@ -12,7 +12,12 @@ from keras import backend as K
 from keras import layers, initializers
 from typing import List, Literal, Optional, Sequence, Tuple, Union
 
-from .dtype_utils import ensure_float32, restore_dtype, epsilon_for_dtype
+from .dtype_utils import (
+    ensure_dense_tensor,
+    ensure_float32,
+    restore_dtype,
+    epsilon_for_dtype,
+)
 from .ops_layers import (
     NormalizationModeType,
     StandardDeviationLayer,
@@ -1160,13 +1165,15 @@ class LagTransformLayer(layers.Layer):
             - In ``variant='compact'``, ``T`` can vary across calls.
             - In ``variant='per_lag'``, ``T`` must be fixed and equal to the
               first built static time size.
+            Sparse inputs are accepted and densified internally, preserving the
+            static shape metadata inferred by Keras.
             
         Returns
         -------
         tf.Tensor
             Transformed returns with the same shape and dtype as ``R``.
         """
-        R = tf.convert_to_tensor(R)
+        R = ensure_dense_tensor(R)
         R_work, original_dtype = ensure_float32(R)
         dtype = R_work.dtype
         eps_tensor = epsilon_for_dtype(dtype, self._eps_base)
@@ -1215,6 +1222,10 @@ class LagTransformLayer(layers.Layer):
         # Apply transformation: alpha/beta * tanh(beta * R)
         transformed = alpha_div_beta * tf.tanh(beta * R_work)
         return restore_dtype(transformed, original_dtype)
+
+    def compute_output_shape(self, input_shape: Tuple[int, ...]) -> tf.TensorShape:
+        """Lag transformation preserves the input shape."""
+        return tf.TensorShape(input_shape)
     
     def get_config(self) -> dict:
         config = super().get_config()

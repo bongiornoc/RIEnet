@@ -12,9 +12,28 @@ from __future__ import annotations
 
 import numpy as np
 import tensorflow as tf
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 _LOWER_PRECISION_DTYPES = (tf.float16, tf.bfloat16)
+
+
+def ensure_dense_tensor(
+    tensor: Union[tf.Tensor, tf.SparseTensor],
+) -> tf.Tensor:
+    """
+    Convert sparse tensors to dense while preserving known static shape metadata.
+
+    Keras may route symbolic inputs through ``tf.SparseTensor`` placeholders even
+    when the logical input is dense, for example after scalar arithmetic on a
+    dense ``KerasTensor``. RIEnet layers operate on dense tensors, so sparse
+    placeholders must be densified before further TensorFlow ops such as
+    ``tf.convert_to_tensor`` are applied.
+    """
+    if isinstance(tensor, tf.SparseTensor):
+        static_shape = tensor.shape
+        tensor = tf.sparse.to_dense(tensor)
+        tensor = tf.ensure_shape(tensor, static_shape)
+    return tf.convert_to_tensor(tensor)
 
 
 def ensure_float32(tensor: tf.Tensor) -> Tuple[tf.Tensor, Optional[tf.dtypes.DType]]:

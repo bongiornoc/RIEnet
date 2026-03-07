@@ -68,6 +68,64 @@ def test_per_lag_dynamic_T_raises():
         _ = layer(x)
 
 
+def test_compact_accepts_symbolic_sparse_inputs_from_scalar_arithmetic():
+    n_stocks, lookback = 5, 20
+    close2close = tf.keras.Input(shape=(n_stocks, lookback), name="close2close")
+    open2close = tf.keras.Input(shape=(n_stocks, lookback), name="open2close")
+
+    scaled = tf.keras.layers.Subtract()([close2close, open2close]) * 252.0
+    assert scaled.sparse is True
+
+    layer = LagTransformLayer(variant="compact", name="lag_compact")
+    outputs = layer(scaled)
+    assert outputs.shape == scaled.shape
+    assert outputs.sparse is False
+
+    model = tf.keras.Model([close2close, open2close], outputs)
+    x_close2close = tf.random.normal((2, n_stocks, lookback))
+    x_open2close = tf.random.normal((2, n_stocks, lookback))
+
+    y_symbolic = model([x_close2close, x_open2close])
+    y_dense = layer((x_close2close - x_open2close) * 252.0)
+
+    np.testing.assert_allclose(y_symbolic.numpy(), y_dense.numpy(), atol=1e-6)
+
+
+def test_per_lag_accepts_symbolic_sparse_inputs_from_scalar_arithmetic():
+    n_stocks, lookback = 5, 20
+    close2close = tf.keras.Input(shape=(n_stocks, lookback), name="close2close")
+    open2close = tf.keras.Input(shape=(n_stocks, lookback), name="open2close")
+
+    scaled = tf.keras.layers.Subtract()([close2close, open2close]) * 252.0
+    assert scaled.sparse is True
+
+    layer = LagTransformLayer(variant="per_lag", name="lag_per_lag")
+    outputs = layer(scaled)
+    assert outputs.shape == scaled.shape
+    assert outputs.sparse is False
+
+    model = tf.keras.Model([close2close, open2close], outputs)
+    x_close2close = tf.random.normal((2, n_stocks, lookback))
+    x_open2close = tf.random.normal((2, n_stocks, lookback))
+
+    y_symbolic = model([x_close2close, x_open2close])
+    y_dense = layer((x_close2close - x_open2close) * 252.0)
+
+    np.testing.assert_allclose(y_symbolic.numpy(), y_dense.numpy(), atol=1e-6)
+
+
+def test_sparse_tensor_input_matches_dense_input():
+    dense = tf.random.normal((2, 5, 20))
+    dense = tf.where(tf.abs(dense) > 0.35, dense, tf.zeros_like(dense))
+    sparse = tf.sparse.from_dense(dense)
+
+    layer = LagTransformLayer(variant="compact")
+    y_dense = layer(dense)
+    y_sparse = layer(sparse)
+
+    np.testing.assert_allclose(y_sparse.numpy(), y_dense.numpy(), atol=1e-6)
+
+
 def test_serialization_roundtrip_both_variants():
     layer_c = LagTransformLayer(variant="compact")
     x_c = tf.random.normal((1, 3, 12))
