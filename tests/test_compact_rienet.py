@@ -275,6 +275,42 @@ class TestRIEnetLayer:
             rtol=1e-5,
             atol=1e-6,
         )
+        transformed_variance_mean = tf.reduce_mean(
+            tf.square(outputs['transformed_std']),
+            axis=1,
+        )
+        np.testing.assert_allclose(
+            transformed_variance_mean.numpy().squeeze(-1),
+            1.0,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+    def test_spectral_outputs_reconstruct_cleaned_correlation(self):
+        """Exposed eigensystem should reconstruct the cleaned correlation matrix."""
+        layer = RIEnetLayer(output_type=['correlation', 'eigenvalues', 'eigenvectors'])
+
+        inputs = tf.random.normal((2, 5, 24))
+        outputs = layer(inputs)
+
+        product_layer = EigenProductLayer(name='test_rienet_corr_reconstruct')
+        reconstructed = product_layer(
+            tf.squeeze(outputs['eigenvalues'], axis=-1),
+            outputs['eigenvectors'],
+        )
+
+        np.testing.assert_allclose(
+            reconstructed.numpy(),
+            outputs['correlation'].numpy(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            tf.linalg.diag_part(reconstructed).numpy(),
+            1.0,
+            rtol=1e-5,
+            atol=1e-6,
+        )
 
     def test_custom_recurrent_configuration(self):
         """Custom recurrent sizes and cell types should be honoured."""
@@ -653,6 +689,38 @@ class TestCustomLayers:
         assert outputs['eigenvectors'].shape == (2, 4, 4)
         assert outputs['inverse_eigenvalues'].shape == (2, 4, 1)
 
+    def test_correlation_eigen_transform_exposed_eigensystem_reconstructs_correlation(self):
+        """Public eigensystem outputs should reconstruct the returned correlation."""
+        layer = CorrelationEigenTransformLayer(
+            output_type=['correlation', 'eigenvalues', 'eigenvectors'],
+            name='test_corr_eig_transform_reconstruct',
+        )
+
+        raw = tf.random.normal((2, 4, 4))
+        covariance = tf.matmul(raw, raw, transpose_b=True)
+        std = tf.sqrt(tf.linalg.diag_part(covariance))
+        corr_scale = tf.einsum('bi,bj->bij', std, std)
+        correlation = covariance / corr_scale
+
+        outputs = layer(correlation)
+        reconstructed = EigenProductLayer(name='test_corr_eig_transform_product')(
+            tf.squeeze(outputs['eigenvalues'], axis=-1),
+            outputs['eigenvectors'],
+        )
+
+        np.testing.assert_allclose(
+            reconstructed.numpy(),
+            outputs['correlation'].numpy(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            tf.linalg.diag_part(reconstructed).numpy(),
+            1.0,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
     def test_correlation_eigen_transform_layer_inverse_correlation_output(self):
         """Layer should return inverse correlation when requested."""
         layer = CorrelationEigenTransformLayer(
@@ -737,8 +805,13 @@ class TestCustomLayers:
         precision = inverse_correlation * inverse_vol
         covariance = tf.linalg.inv(precision)
         diag = tf.linalg.diag_part(covariance)
-        mean_diag = tf.reduce_mean(diag)
-        assert float(tf.math.abs(mean_diag - 1.0).numpy()) < 1e-4
+        mean_diag = tf.reduce_mean(diag, axis=-1)
+        np.testing.assert_allclose(
+            mean_diag.numpy(),
+            1.0,
+            rtol=1e-5,
+            atol=1e-4,
+        )
 
     def test_compact_layer_input_transformed_output(self):
         """Layer can emit transformed inputs when requested."""
@@ -754,12 +827,60 @@ class TestCustomLayers:
         """Default configuration keeps the covariance diagonal centred on one."""
         layer = RIEnetLayer(output_type=['covariance'],
                                    name='test_covariance_unit')
-        batch, n_assets, n_days = 1, 4, 6
+        batch, n_assets, n_days = 3, 4, 6
         inputs = tf.random.normal((batch, n_assets, n_days))
         covariance = layer(inputs)
         diag = tf.linalg.diag_part(covariance)
-        mean_diag = tf.reduce_mean(diag)
-        assert float(tf.math.abs(mean_diag - 1.0).numpy()) < 1e-4
+        mean_diag = tf.reduce_mean(diag, axis=-1)
+        np.testing.assert_allclose(
+            mean_diag.numpy(),
+            1.0,
+            rtol=1e-5,
+            atol=1e-4,
+        )
+
+    def test_compact_layer_weights_internal_variance_representation_unit_mean(self):
+        """Weights branch keeps internal transformed variance and covariance scale centred."""
+        layer = RIEnetLayer(output_type='weights', name='test_weights_internal_variance_unit')
+
+        batch, n_assets, n_days = 3, 5, 12
+        inputs = tf.random.normal((batch, n_assets, n_days))
+        _ = layer(inputs)
+
+        scaled_inputs = inputs * layer._annualization_factor
+        input_transformed = layer.lag_transform(scaled_inputs)
+        std, mean = layer.std_layer(input_transformed)
+
+        transformed_inverse_std = layer.std_transform(std)
+        if layer.std_normalization is not None:
+            transformed_inverse_std = layer.std_normalization(transformed_inverse_std)
+        transformed_std = tf.math.reciprocal(transformed_inverse_std)
+
+        transformed_variance_mean = tf.reduce_mean(tf.square(transformed_std), axis=1)
+        np.testing.assert_allclose(
+            transformed_variance_mean.numpy().squeeze(-1),
+            1.0,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+        zscores = (input_transformed - mean) / std
+        correlation_matrix = layer.covariance_layer(zscores)
+        attributes = layer.dimension_aware([zscores, correlation_matrix])
+        cleaned_correlation = layer.correlation_eigen_transform(
+            correlation_matrix,
+            attributes=attributes,
+            output_type='correlation',
+        )
+        variance_outer = CovarianceLayer(normalize=False, name='test_weights_variance_outer')
+        covariance = cleaned_correlation * variance_outer(transformed_std)
+        covariance_variance_mean = tf.reduce_mean(tf.linalg.diag_part(covariance), axis=-1)
+        np.testing.assert_allclose(
+            covariance_variance_mean.numpy(),
+            1.0,
+            rtol=1e-5,
+            atol=1e-5,
+        )
 
     def test_compact_layer_skip_variance_normalization(self):
         """Disabling variance normalization leaves the layer without the normalizer."""

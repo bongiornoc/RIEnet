@@ -740,6 +740,7 @@ class CorrelationEigenTransformLayer(layers.Layer):
              correlation_matrix: tf.Tensor,
              attributes: Optional[tf.Tensor] = None,
              output_type: Optional[CorrelationTransformOutputType] = None,
+             include_raw_eigenvectors: bool = False,
              training: Optional[bool] = None) -> tf.Tensor:
         """
         Clean a correlation matrix in eigen-space.
@@ -756,6 +757,10 @@ class CorrelationEigenTransformLayer(layers.Layer):
         output_type : CorrelationTransformOutputType, optional
             Optional per-call override of requested output components.
             If omitted, the instance-level ``output_type`` from ``__init__`` is used.
+        include_raw_eigenvectors : bool, default False
+            Internal-use flag. When ``True``, the returned dictionary also contains
+            a private ``'_raw_eigenvectors'`` entry with the orthogonal eigenvectors
+            from the original decomposition.
         training : bool, optional
             Keras training flag passed to the recurrent transform.
 
@@ -781,6 +786,7 @@ class CorrelationEigenTransformLayer(layers.Layer):
             or need_eigenvalues
             or need_correlation
             or need_inverse_correlation
+            or need_eigenvectors
         )
 
         corr_rank = correlation_matrix.shape.rank
@@ -832,12 +838,12 @@ class CorrelationEigenTransformLayer(layers.Layer):
 
         eigenvalues, eigenvectors = self.spectral_decomp(correlation_matrix)
         results = {}
-
-        if need_eigenvectors:
-            results['eigenvectors'] = eigenvectors
+        if include_raw_eigenvectors:
+            results['_raw_eigenvectors'] = eigenvectors
 
         transformed_inverse_eigenvalues = None
         transformed_eigenvalues = None
+        direct_eigenvectors = None
 
         if need_inverse_eigenvalues:
             eigenvalue_features = eigenvalues
@@ -878,7 +884,7 @@ class CorrelationEigenTransformLayer(layers.Layer):
                     axis=-1,
                 )
 
-        if need_eigenvalues or need_correlation:
+        if need_eigenvalues or need_correlation or need_eigenvectors:
             inverse_eigs_work, inverse_eigs_dtype = ensure_float32(transformed_inverse_eigenvalues)
             eps = epsilon_for_dtype(inverse_eigs_work.dtype, self.epsilon)
             transformed_eigenvalues_work = tf.math.reciprocal(
@@ -888,10 +894,15 @@ class CorrelationEigenTransformLayer(layers.Layer):
             if need_eigenvalues:
                 results['eigenvalues'] = tf.expand_dims(transformed_eigenvalues, axis=-1)
 
-        if need_correlation:
+        if need_correlation or need_eigenvectors:
             direct_eigenvectors = self.eigenvector_rescaler(
                 [eigenvectors, transformed_eigenvalues]
             )
+
+        if need_eigenvectors:
+            results['eigenvectors'] = direct_eigenvectors
+
+        if need_correlation:
             results['correlation'] = self.correlation_product(
                 transformed_eigenvalues,
                 direct_eigenvectors,
@@ -906,7 +917,7 @@ class CorrelationEigenTransformLayer(layers.Layer):
                 inverse_eigenvectors,
             )
 
-        if len(components) == 1:
+        if len(components) == 1 and not include_raw_eigenvectors:
             return results[components[0]]
         return results
 
@@ -1802,7 +1813,7 @@ class RIEnetLayer(layers.Layer):
             attributes = self.dimension_aware([zscores, correlation_matrix])
 
         spectral_components: List[str] = []
-        if need_eigenvectors or need_precision or need_covariance or need_correlation or need_weights:
+        if need_eigenvectors:
             spectral_components.append('eigenvectors')
         if need_precision or need_weights or need_covariance or need_correlation or need_eigenvalues:
             spectral_components.append('inverse_eigenvalues')
@@ -1824,6 +1835,7 @@ class RIEnetLayer(layers.Layer):
             correlation_matrix,
             attributes=attributes,
             output_type=deduped_components,
+            include_raw_eigenvectors=need_precision or need_weights,
             training=training,
         )
         if isinstance(spectral_outputs, dict):
@@ -1832,6 +1844,7 @@ class RIEnetLayer(layers.Layer):
             spectral_results = {deduped_components[0]: spectral_outputs}
 
         eigenvectors = spectral_results.get('eigenvectors')
+        raw_eigenvectors = spectral_results.get('_raw_eigenvectors', eigenvectors)
         transformed_inverse_eigenvalues = spectral_results.get('inverse_eigenvalues')
         if transformed_inverse_eigenvalues is not None:
             transformed_inverse_eigenvalues = tf.squeeze(transformed_inverse_eigenvalues, axis=-1)
@@ -1853,7 +1866,7 @@ class RIEnetLayer(layers.Layer):
             if self.outer_product is None:
                 raise RuntimeError("Internal error: missing outer_product layer.")
             inverse_eigenvectors = self.eigenvector_rescaler(
-                [eigenvectors, transformed_inverse_eigenvalues]
+                [raw_eigenvectors, transformed_inverse_eigenvalues]
             )
             inverse_correlation = self.eigen_product(
                 transformed_inverse_eigenvalues, inverse_eigenvectors
@@ -1876,7 +1889,7 @@ class RIEnetLayer(layers.Layer):
             if self.weight_layer is None:
                 raise RuntimeError("Internal error: missing weight_layer.")
             weights = self.weight_layer(
-                eigenvectors=eigenvectors,
+                eigenvectors=raw_eigenvectors,
                 inverse_eigenvalues=transformed_inverse_eigenvalues,
                 inverse_std=std_for_structural,
             )
