@@ -312,6 +312,36 @@ class TestRIEnetLayer:
             atol=1e-6,
         )
 
+    def test_weights_match_cleaned_covariance_solution(self):
+        """Weights should be derived from the cleaned covariance actually returned."""
+        layer = RIEnetLayer(output_type=['weights', 'covariance', 'precision'])
+
+        inputs = tf.random.normal((3, 5, 24))
+        outputs = layer(inputs)
+
+        covariance = outputs['covariance'].numpy()
+        weights = outputs['weights'].numpy()
+        precision = outputs['precision'].numpy()
+        ones = np.ones((weights.shape[0], weights.shape[1], 1), dtype=covariance.dtype)
+
+        raw_from_covariance = np.linalg.solve(covariance, ones)
+        expected_from_covariance = raw_from_covariance / raw_from_covariance.sum(axis=1, keepdims=True)
+        np.testing.assert_allclose(
+            weights,
+            expected_from_covariance,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+        raw_from_precision = precision @ ones
+        expected_from_precision = raw_from_precision / raw_from_precision.sum(axis=1, keepdims=True)
+        np.testing.assert_allclose(
+            weights,
+            expected_from_precision,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
     def test_custom_recurrent_configuration(self):
         """Custom recurrent sizes and cell types should be honoured."""
         layer = RIEnetLayer(
@@ -719,6 +749,32 @@ class TestCustomLayers:
             1.0,
             rtol=1e-5,
             atol=1e-6,
+        )
+
+    def test_correlation_eigen_transform_inverse_matches_cleaned_correlation(self):
+        """inverse_correlation should be the true inverse of the cleaned correlation."""
+        layer = CorrelationEigenTransformLayer(
+            output_type=['correlation', 'inverse_correlation'],
+            name='test_corr_eig_transform_true_inverse',
+        )
+
+        raw = tf.random.normal((2, 4, 4))
+        covariance = tf.matmul(raw, raw, transpose_b=True)
+        std = tf.sqrt(tf.linalg.diag_part(covariance))
+        corr_scale = tf.einsum('bi,bj->bij', std, std)
+        correlation = covariance / corr_scale
+
+        outputs = layer(correlation)
+        identity = outputs['inverse_correlation'] @ outputs['correlation']
+        expected_identity = np.broadcast_to(
+            np.eye(4, dtype=identity.dtype.as_numpy_dtype),
+            identity.shape,
+        )
+        np.testing.assert_allclose(
+            identity.numpy(),
+            expected_identity,
+            rtol=1e-5,
+            atol=1e-5,
         )
 
     def test_correlation_eigen_transform_layer_inverse_correlation_output(self):

@@ -884,7 +884,7 @@ class CorrelationEigenTransformLayer(layers.Layer):
                     axis=-1,
                 )
 
-        if need_eigenvalues or need_correlation or need_eigenvectors:
+        if need_eigenvalues or need_correlation or need_inverse_correlation or need_eigenvectors:
             inverse_eigs_work, inverse_eigs_dtype = ensure_float32(transformed_inverse_eigenvalues)
             eps = epsilon_for_dtype(inverse_eigs_work.dtype, self.epsilon)
             transformed_eigenvalues_work = tf.math.reciprocal(
@@ -894,27 +894,34 @@ class CorrelationEigenTransformLayer(layers.Layer):
             if need_eigenvalues:
                 results['eigenvalues'] = tf.expand_dims(transformed_eigenvalues, axis=-1)
 
-        if need_correlation or need_eigenvectors:
+        cleaned_correlation = None
+        if need_correlation or need_inverse_correlation or need_eigenvectors:
             direct_eigenvectors = self.eigenvector_rescaler(
                 [eigenvectors, transformed_eigenvalues]
+            )
+            cleaned_correlation = self.correlation_product(
+                transformed_eigenvalues,
+                direct_eigenvectors,
             )
 
         if need_eigenvectors:
             results['eigenvectors'] = direct_eigenvectors
 
         if need_correlation:
-            results['correlation'] = self.correlation_product(
-                transformed_eigenvalues,
-                direct_eigenvectors,
-            )
+            results['correlation'] = cleaned_correlation
 
         if need_inverse_correlation:
-            inverse_eigenvectors = self.eigenvector_rescaler(
-                [eigenvectors, transformed_inverse_eigenvalues]
+            corr_work, corr_original_dtype = ensure_float32(cleaned_correlation)
+            corr_work = 0.5 * (
+                corr_work + tf.linalg.matrix_transpose(corr_work)
             )
-            results['inverse_correlation'] = self.correlation_product(
-                transformed_inverse_eigenvalues,
-                inverse_eigenvectors,
+            inverse_corr_work = tf.linalg.inv(corr_work)
+            inverse_corr_work = 0.5 * (
+                inverse_corr_work + tf.linalg.matrix_transpose(inverse_corr_work)
+            )
+            results['inverse_correlation'] = restore_dtype(
+                inverse_corr_work,
+                corr_original_dtype,
             )
 
         if len(components) == 1 and not include_raw_eigenvectors:
@@ -1636,18 +1643,10 @@ class RIEnetLayer(layers.Layer):
             self.std_normalization = None
 
         # Matrix reconstruction (see Eq. 13-15)
-        if self._need_precision:
-            self.eigenvector_rescaler = EigenvectorRescalingLayer(
-                name=f"{self.name}_eigenvector_rescaler"
-            )
-            self.eigen_product = EigenProductLayer(
-                name=f"{self.name}_eigen_product"
-            )
-        else:
-            self.eigenvector_rescaler = None
-            self.eigen_product = None
+        self.eigenvector_rescaler = None
+        self.eigen_product = None
 
-        if self._need_precision or self._need_covariance:
+        if self._need_precision or self._need_covariance or self._need_weights:
             self.outer_product = CovarianceLayer(
                 normalize=False,
                 name=f"{self.name}_inverse_scale_outer"
@@ -1655,12 +1654,7 @@ class RIEnetLayer(layers.Layer):
         else:
             self.outer_product = None
 
-        if self._need_weights:
-            self.weight_layer = EigenWeightsLayer(
-                name=f"{self.name}_weights"
-            )
-        else:
-            self.weight_layer = None
+        self.weight_layer = None
 
     def build(self, input_shape: Tuple[int, int, int]) -> None:
         """Build sub-layers once input dimensionality is known."""
@@ -1676,8 +1670,6 @@ class RIEnetLayer(layers.Layer):
         covariance_shape = tf.TensorShape([batch, n_stocks, n_stocks])
         attributes_shape = tf.TensorShape([batch, n_stocks, len(self._dimensional_features)])
         std_shape = tf.TensorShape([batch, n_stocks, 1])
-        eigenvalues_vector_shape = tf.TensorShape([batch, n_stocks])
-
         self.lag_transform.build(input_shape)
         if self._need_pipeline_outputs:
             self.std_layer.build(input_shape)
@@ -1694,21 +1686,10 @@ class RIEnetLayer(layers.Layer):
             self.std_transform.build(std_shape)
             if self.std_normalization is not None:
                 self.std_normalization.build(std_shape)
-        if self._need_precision:
-            if self.eigenvector_rescaler is None or self.eigen_product is None:
-                raise RuntimeError(
-                    "Internal error: missing precision reconstruction layers."
-                )
-            self.eigenvector_rescaler.build([covariance_shape, eigenvalues_vector_shape])
-            self.eigen_product.build([eigenvalues_vector_shape, covariance_shape])
-        if self._need_precision or self._need_covariance:
+        if self._need_precision or self._need_covariance or self._need_weights:
             if self.outer_product is None:
                 raise RuntimeError("Internal error: missing outer_product layer.")
             self.outer_product.build(std_shape)
-        if self._need_weights:
-            if self.weight_layer is None:
-                raise RuntimeError("Internal error: missing weight_layer.")
-            self.weight_layer.build([covariance_shape, eigenvalues_vector_shape, std_shape])
 
         super().build(input_shape)
         
@@ -1785,7 +1766,7 @@ class RIEnetLayer(layers.Layer):
             if self.std_normalization is not None and need_inverse_std:
                 std_for_structural = self.std_normalization(transformed_inverse_std)
 
-            if need_transformed_std or need_covariance:
+            if need_inverse_std:
                 std_work, std_original_dtype = ensure_float32(std_for_structural)
                 std_eps = epsilon_for_dtype(std_work.dtype, K.epsilon())
                 transformed_std_work = tf.math.reciprocal(tf.maximum(std_work, std_eps))
@@ -1815,11 +1796,9 @@ class RIEnetLayer(layers.Layer):
         spectral_components: List[str] = []
         if need_eigenvectors:
             spectral_components.append('eigenvectors')
-        if need_precision or need_weights or need_covariance or need_correlation or need_eigenvalues:
-            spectral_components.append('inverse_eigenvalues')
         if need_eigenvalues:
             spectral_components.append('eigenvalues')
-        if need_covariance or need_correlation:
+        if need_precision or need_weights or need_covariance or need_correlation:
             spectral_components.append('correlation')
 
         deduped_components: List[str] = []
@@ -1835,7 +1814,6 @@ class RIEnetLayer(layers.Layer):
             correlation_matrix,
             attributes=attributes,
             output_type=deduped_components,
-            include_raw_eigenvectors=need_precision or need_weights,
             training=training,
         )
         if isinstance(spectral_outputs, dict):
@@ -1844,55 +1822,54 @@ class RIEnetLayer(layers.Layer):
             spectral_results = {deduped_components[0]: spectral_outputs}
 
         eigenvectors = spectral_results.get('eigenvectors')
-        raw_eigenvectors = spectral_results.get('_raw_eigenvectors', eigenvectors)
-        transformed_inverse_eigenvalues = spectral_results.get('inverse_eigenvalues')
-        if transformed_inverse_eigenvalues is not None:
-            transformed_inverse_eigenvalues = tf.squeeze(transformed_inverse_eigenvalues, axis=-1)
-
         cleaned_correlation = spectral_results.get('correlation')
 
         if need_eigenvectors:
             results['eigenvectors'] = eigenvectors
         if need_eigenvalues:
             results['eigenvalues'] = spectral_results['eigenvalues']
-       
-        # Precision-specific reconstruction
-        inverse_correlation = None
-        if need_precision:
-            if self.eigenvector_rescaler is None or self.eigen_product is None:
-                raise RuntimeError(
-                    "Internal error: missing precision reconstruction layers."
-                )
-            if self.outer_product is None:
-                raise RuntimeError("Internal error: missing outer_product layer.")
-            inverse_eigenvectors = self.eigenvector_rescaler(
-                [raw_eigenvectors, transformed_inverse_eigenvalues]
-            )
-            inverse_correlation = self.eigen_product(
-                transformed_inverse_eigenvalues, inverse_eigenvectors
-            )
-            inverse_volatility_matrix = self.outer_product(std_for_structural)
-            precision_matrix = inverse_correlation * inverse_volatility_matrix
-            results['precision'] = precision_matrix
 
-        if need_covariance:
+        covariance = None
+        if need_precision or need_covariance or need_weights:
             if self.outer_product is None:
                 raise RuntimeError("Internal error: missing outer_product layer.")
             volatility_matrix = self.outer_product(transformed_std)
             covariance = cleaned_correlation * volatility_matrix
-            results['covariance'] = covariance
+            if need_covariance:
+                results['covariance'] = covariance
 
         if need_correlation:
             results['correlation'] = cleaned_correlation
 
-        if need_weights:
-            if self.weight_layer is None:
-                raise RuntimeError("Internal error: missing weight_layer.")
-            weights = self.weight_layer(
-                eigenvectors=raw_eigenvectors,
-                inverse_eigenvalues=transformed_inverse_eigenvalues,
-                inverse_std=std_for_structural,
+        precision_matrix = None
+        if need_precision:
+            covariance_work, covariance_original_dtype = ensure_float32(covariance)
+            covariance_work = 0.5 * (
+                covariance_work + tf.linalg.matrix_transpose(covariance_work)
             )
+            precision_work = tf.linalg.inv(covariance_work)
+            precision_work = 0.5 * (
+                precision_work + tf.linalg.matrix_transpose(precision_work)
+            )
+            precision_matrix = restore_dtype(precision_work, covariance_original_dtype)
+            results['precision'] = precision_matrix
+
+        if need_weights:
+            covariance_work, covariance_original_dtype = ensure_float32(covariance)
+            ones_shape = tf.concat(
+                [
+                    tf.shape(covariance_work)[:-1],
+                    tf.constant([1], dtype=tf.int32),
+                ],
+                axis=0,
+            )
+            ones = tf.ones(ones_shape, dtype=covariance_work.dtype)
+            raw_weights = tf.linalg.solve(covariance_work, ones)
+            denom = tf.reduce_sum(raw_weights, axis=-2, keepdims=True)
+            epsilon = epsilon_for_dtype(covariance_work.dtype, K.epsilon())
+            sign = tf.where(denom >= 0, tf.ones_like(denom), -tf.ones_like(denom))
+            safe_denom = tf.where(tf.abs(denom) < epsilon, sign * epsilon, denom)
+            weights = restore_dtype(raw_weights / safe_denom, covariance_original_dtype)
             results['weights'] = weights
 
         if len(self.output_components) == 1:
