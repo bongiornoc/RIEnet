@@ -88,3 +88,7 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+filterwarnings = [
+    "error",
+    "ignore:__array__ implementation doesn't accept a copy keyword.*:DeprecationWarning:keras\\.src\\.backend\\.tensorflow\\.core",
+]
