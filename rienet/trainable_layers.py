@@ -1743,10 +1743,58 @@ class RIEnetLayer(layers.Layer):
             vectors_work,
             spectral_rhs,
         )
+        return self._normalize_raw_weights(raw_weights, original_dtype)
 
+    def _exact_weights_from_raw_eigensystem(
+        self,
+        orthogonal_eigenvectors: tf.Tensor,
+        inverse_eigenvalues: tf.Tensor,
+        inverse_std: tf.Tensor,
+    ) -> tf.Tensor:
+        """Compute exact GMV weights without materializing rescaled eigenvectors."""
+        orthogonal_eigenvectors = tf.convert_to_tensor(orthogonal_eigenvectors)
+        vectors_work, original_dtype = ensure_float32(orthogonal_eigenvectors)
+        dtype = vectors_work.dtype
+
+        target_shape = tf.shape(vectors_work)[:-1]
+        inverse_eigenvalues = tf.cast(tf.convert_to_tensor(inverse_eigenvalues), dtype)
+        inverse_eigenvalues = tf.reshape(inverse_eigenvalues, target_shape)
+        inverse_std = tf.cast(tf.convert_to_tensor(inverse_std), dtype)
+        inverse_std = tf.reshape(inverse_std, target_shape)
+
+        eps = epsilon_for_dtype(dtype, K.epsilon())
+        eigenvalues = tf.math.reciprocal(tf.maximum(inverse_eigenvalues, eps))
+        diagonal_scale_sq = tf.einsum(
+            '...ij,...j,...ij->...i',
+            vectors_work,
+            eigenvalues,
+            vectors_work,
+        )
+        diagonal_scale = tf.sqrt(tf.maximum(diagonal_scale_sq, eps))
+        scaled_inverse_std = diagonal_scale * inverse_std
+
+        spectral_rhs = tf.linalg.matvec(
+            vectors_work,
+            scaled_inverse_std,
+            transpose_a=True,
+        )
+        raw_weights = scaled_inverse_std * tf.linalg.matvec(
+            vectors_work,
+            inverse_eigenvalues * spectral_rhs,
+        )
+        return self._normalize_raw_weights(raw_weights, original_dtype)
+
+    def _normalize_raw_weights(
+        self,
+        raw_weights: tf.Tensor,
+        original_dtype: Optional[tf.dtypes.DType],
+    ) -> tf.Tensor:
+        """Normalize raw portfolio weights with the layer's safe denominator rule."""
+        dtype = raw_weights.dtype
+        epsilon = epsilon_for_dtype(dtype, K.epsilon())
         denom = tf.reduce_sum(raw_weights, axis=-1, keepdims=True)
         sign = tf.where(denom >= 0, tf.ones_like(denom), -tf.ones_like(denom))
-        safe_denom = tf.where(tf.abs(denom) < eps, sign * eps, denom)
+        safe_denom = tf.where(tf.abs(denom) < epsilon, sign * epsilon, denom)
         weights = raw_weights / safe_denom
         return restore_dtype(tf.expand_dims(weights, axis=-1), original_dtype)
 
@@ -1760,15 +1808,7 @@ class RIEnetLayer(layers.Layer):
         inverse_std = tf.cast(tf.convert_to_tensor(inverse_std), inverse_corr_work.dtype)
         inverse_std = tf.reshape(inverse_std, tf.shape(inverse_corr_work)[:-1])
         raw_weights = inverse_std * tf.linalg.matvec(inverse_corr_work, inverse_std)
-        denom = tf.reduce_sum(raw_weights, axis=-1, keepdims=True)
-        epsilon = epsilon_for_dtype(inverse_corr_work.dtype, K.epsilon())
-        sign = tf.where(denom >= 0, tf.ones_like(denom), -tf.ones_like(denom))
-        safe_denom = tf.where(tf.abs(denom) < epsilon, sign * epsilon, denom)
-        weights = raw_weights / safe_denom
-        return restore_dtype(
-            tf.expand_dims(weights, axis=-1),
-            inverse_corr_original_dtype,
-        )
+        return self._normalize_raw_weights(raw_weights, inverse_corr_original_dtype)
 
     def _precision_outputs(
         self,
@@ -1853,6 +1893,7 @@ class RIEnetLayer(layers.Layer):
         
         # Transform standard deviations (normalize only when needed downstream)
         need_inverse_std = need_precision or need_covariance or need_weights or need_transformed_std
+        need_reciprocal_std = need_covariance or need_transformed_std
         transformed_inverse_std = None
         std_for_structural = None
         transformed_std = None
@@ -1864,7 +1905,7 @@ class RIEnetLayer(layers.Layer):
             if self.std_normalization is not None and need_inverse_std:
                 std_for_structural = self.std_normalization(transformed_inverse_std)
 
-            if need_inverse_std:
+            if need_reciprocal_std:
                 std_work, std_original_dtype = ensure_float32(std_for_structural)
                 std_eps = epsilon_for_dtype(std_work.dtype, K.epsilon())
                 transformed_std_work = tf.math.reciprocal(tf.maximum(std_work, std_eps))
@@ -1892,12 +1933,15 @@ class RIEnetLayer(layers.Layer):
             attributes = self.dimension_aware([zscores, correlation_matrix])
 
         spectral_components: List[str] = []
-        need_exact_weight_eigensystem = need_weights and not need_precision
-        if need_eigenvectors or need_exact_weight_eigensystem:
+        need_fast_weight_path = need_weights and not (
+            need_precision or need_covariance or need_correlation or need_eigenvectors
+        )
+        need_legacy_weight_eigensystem = need_weights and not need_precision and not need_fast_weight_path
+        if need_eigenvectors or need_legacy_weight_eigensystem:
             spectral_components.append('eigenvectors')
         if need_eigenvalues:
             spectral_components.append('eigenvalues')
-        if need_exact_weight_eigensystem:
+        if need_fast_weight_path or need_legacy_weight_eigensystem:
             spectral_components.append('inverse_eigenvalues')
         if need_covariance or need_correlation:
             spectral_components.append('correlation')
@@ -1917,6 +1961,7 @@ class RIEnetLayer(layers.Layer):
             correlation_matrix,
             attributes=attributes,
             output_type=deduped_components,
+            include_raw_eigenvectors=need_fast_weight_path,
             training=training,
         )
         if isinstance(spectral_outputs, dict):
@@ -1925,6 +1970,7 @@ class RIEnetLayer(layers.Layer):
             spectral_results = {deduped_components[0]: spectral_outputs}
 
         eigenvectors = spectral_results.get('eigenvectors')
+        raw_eigenvectors = spectral_results.get('_raw_eigenvectors')
         transformed_inverse_eigenvalues = spectral_results.get('inverse_eigenvalues')
         if transformed_inverse_eigenvalues is not None:
             transformed_inverse_eigenvalues = tf.squeeze(
@@ -1961,11 +2007,20 @@ class RIEnetLayer(layers.Layer):
             )
 
         if need_weights and not need_precision:
-            results['weights'] = self._exact_weights_from_rescaled_eigensystem(
-                eigenvectors,
-                transformed_inverse_eigenvalues,
-                std_for_structural,
-            )
+            if need_fast_weight_path:
+                if raw_eigenvectors is None:
+                    raise RuntimeError("Internal error: missing raw eigenvectors for weights fast path.")
+                results['weights'] = self._exact_weights_from_raw_eigensystem(
+                    raw_eigenvectors,
+                    transformed_inverse_eigenvalues,
+                    std_for_structural,
+                )
+            else:
+                results['weights'] = self._exact_weights_from_rescaled_eigensystem(
+                    eigenvectors,
+                    transformed_inverse_eigenvalues,
+                    std_for_structural,
+                )
 
         if len(self.output_components) == 1:
             return results[self.output_components[0]]
@@ -1991,6 +2046,7 @@ class RIEnetLayer(layers.Layer):
             'dimensional_features': list(self._dimensional_features),
             'normalize_transformed_variance': self._normalize_variance,
             'lag_transform_variant': self._lag_transform_variant,
+            'annualization_factor': self._annualization_factor,
         })
         return config
     
