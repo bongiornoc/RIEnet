@@ -5,20 +5,34 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **This library implements the neural estimators introduced in:**
-- **Bongiorno, C., Manolakis, E., & Mantegna, R. N. (2025). End-to-End Large Portfolio Optimization for Variance Minimization with Neural Networks through Covariance Cleaning (arXiv:2507.01918). [https://arxiv.org/abs/2507.01918](https://arxiv.org/abs/2507.01918)**
-- **Bongiorno, C., Manolakis, E., & Mantegna, R. N. (2025). Neural Network-Driven Volatility Drag Mitigation under Aggressive Leverage. In *Proceedings of the 6th ACM International Conference on AI in Finance (ICAIF ’25)*. [https://doi.org/10.1145/3768292.3770370](https://doi.org/10.1145/3768292.3770370)**
+- **Bongiorno, C., Manolakis, E., & Mantegna, R. N. (2026). End-to-End Large Portfolio Optimization for Variance Minimization with Neural Networks through Covariance Cleaning. The Journal of Finance and Data Science: 100179. [10.1016/j.jfds.2026.100179](https://doi.org/10.1016/j.jfds.2026.100179)**
+- **Bongiorno, C., Manolakis, E., & Mantegna, R. N. (2025). Neural Network-Driven Volatility Drag Mitigation under Aggressive Leverage. In *Proceedings of the 6th ACM International Conference on AI in Finance (ICAIF ’25)*. [10.1145/3768292.3770370](https://doi.org/10.1145/3768292.3770370)**
 
 
-RIEnet is a **end-to-end neural estimator** for **Global Minimum-Variance (GMV)** portfolios. The architecture couples a **lag-kernel** with a **bidirectional RNN spectral denoiser** and a **marginal-volatility head** to produce cleaned inverse covariances and analytic GMV weights. By design, the number of learnable parameters can be **independent of the look-back window length and the asset-universe size**, enabling immediate transfer across universes and sampling frequencies without retraining. The model can be trained directly on a realized-variance objective and can export its cleaned covariance for constrained optimizations.
+**RIEnet** is a TensorFlow/Keras research implementation for end-to-end global minimum-variance portfolio construction.
 
-## Key Features
+Given a tensor of asset returns, the model estimates a structured covariance / precision representation and produces analytic GMV portfolio weights in a single forward pass.
 
-- **End-to-End Variance Objective** – Trains on the realized out-of-sample variance, yielding GMV weights analytically from the learned inverse covariance.
-- **Parameter Efficiency** – Fixed-size modules (5-parameter lag kernel; BiGRU eigencleaning; lightweight volatility head) keep the model at ≈2k parameters.
-- **Size-Invariant Design** – Complexity does not scale with look-back length or cross-sectional dimension; deploy on new universes without architecture changes.
-- **RIE-Style Covariance Cleaning** – Rotation-invariant mapping of the correlation spectrum with a BiGRU (16 units per direction by default).
-- **Practical Outputs** – Retrieve GMV weights and the cleaned precision/covariance; the latter can be plugged into long-only QP solvers when needed.
-- **Reproducible Defaults** – TensorFlow/Keras reference implementation with paper-consistent hyperparameters and tests.
+This repository is intended for:
+- research and methodological replication,
+- experimentation on large equity universes,
+- integration into quantitative portfolio construction workflows.
+
+
+## What this package provides
+
+- End-to-end training on a realized-variance objective for GMV portfolios
+- Access to portfolio weights, cleaned covariance matrices, and precision matrices
+- A dimension-agnostic architecture suitable for large cross-sectional universes
+- A TensorFlow/Keras implementation aligned with the published methodology
+
+## Evidence in published experiments
+
+The empirical properties of the method are documented in the associated papers.
+
+In particular, the published experiments evaluate the model on large equity universes under a global minimum-variance objective and compare it against standard covariance-based benchmarks.
+
+For details on datasets, training protocol, benchmark definitions, and evaluation metrics, please refer to the papers listed above.
 
 ## Module Organization
 
@@ -281,14 +295,16 @@ pytest tests/
 Please cite the following references when using RIEnet:
 
 ```bibtex
-@article{bongiorno2025covariance,
-  title={End-to-End Large Portfolio Optimization for Variance Minimization with Neural Networks through Covariance Cleaning},
-  author={Bongiorno, Christian and Manolakis, Efstratios and Mantegna, Rosario N.},
-  journal={arXiv preprint arXiv:2507.01918},
-  year={2025}
+@article{bongiorno2026end,
+  title={End-to-end large portfolio optimization for variance minimization with neural networks through covariance cleaning},
+  author={Bongiorno, Christian and Manolakis, Efstratios and Mantegna, Rosario Nunzio},
+  journal={The Journal of Finance and Data Science},
+  pages={100179},
+  year={2026},
+  publisher={Elsevier}
 }
 
-@inproceedings{bongiorno2025compact,
+@inproceedings{bongiorno2025Neural,
   author = {Bongiorno, Christian and Manolakis, Efstratios and Mantegna, Rosario Nunzio},
   title = {Neural Network-Driven Volatility Drag Mitigation under Aggressive Leverage},
   year = {2025},

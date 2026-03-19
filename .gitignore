@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+
+.venv/
+.venv-pypi/
+
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
