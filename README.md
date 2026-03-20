@@ -18,6 +18,7 @@ This repository is intended for:
 - experimentation on large equity universes,
 - integration into quantitative portfolio construction workflows.
 
+For a pyTorch implementation, please refer to the [RIEnet-torch](https://github.com/bongiornoc/RIEnet-torch) repository.
 
 ## What this package provides
 
