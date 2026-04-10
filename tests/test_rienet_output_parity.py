@@ -130,7 +130,9 @@ def legacy_reference_forward(
 
     zscores = (input_transformed - mean) / std
 
-    if need_input_zscores:
+    if "input_zscore" in layer.output_components:
+        results["input_zscore"] = zscores
+    if "input_zscores" in layer.output_components:
         results["input_zscores"] = zscores
 
     if not need_spectral_branch:
@@ -268,6 +270,7 @@ def assert_weight_sums_to_one(outputs: Any) -> None:
 
 OUTPUT_CASES = [
     "input_transformed",
+    "input_zscore",
     "input_zscores",
     "transformed_std",
     "eigenvalues",
@@ -276,7 +279,7 @@ OUTPUT_CASES = [
     "covariance",
     "precision",
     "weights",
-    ["weights", "input_zscores"],
+    ["weights", "input_zscore"],
     ["weights", "transformed_std"],
     ["weights", "eigenvalues"],
     ["weights", "eigenvectors"],

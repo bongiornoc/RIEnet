@@ -52,6 +52,7 @@ OutputComponent = Literal[
     "covariance",
     "correlation",
     "input_transformed",
+    "input_zscore",
     "input_zscores",
     "eigenvalues",
     "eigenvectors",
@@ -1306,8 +1307,9 @@ class RIEnetLayer(layers.Layer):
     output_type : OutputType, default 'weights'
         Component(s) to return. Each entry must belong to
         {'weights', 'precision', 'covariance', 'correlation', 'input_transformed',
-        'input_zscores', 'eigenvalues', 'eigenvectors', 'transformed_std'} or the
-        special string 'all'. When multiple components are requested a dictionary
+        'input_zscore', 'eigenvalues', 'eigenvectors', 'transformed_std'} or the
+        special string 'all'. The alias ``'input_zscores'`` is also accepted for
+        backward compatibility. When multiple components are requested a dictionary
         mapping component name to tensor is returned.
     recurrent_layer_sizes : Sequence[int], optional
         Hidden sizes of the recurrent cleaning block. Defaults to [16] matching the
@@ -1356,7 +1358,7 @@ class RIEnetLayer(layers.Layer):
         - 'weights' -> (batch_size, n_stocks, 1)
         - 'precision', 'covariance', or 'correlation' -> (batch_size, n_stocks, n_stocks)
         - 'input_transformed' -> (batch_size, n_stocks, n_days)
-        - 'input_zscores' -> (batch_size, n_stocks, n_days)
+        - 'input_zscore' -> (batch_size, n_stocks, n_days)
         - 'eigenvalues' -> (batch_size, n_stocks, 1) (cleaned, non-inverse)
         - 'eigenvectors' -> (batch_size, n_stocks, n_stocks)
         - 'transformed_std' -> (batch_size, n_stocks, 1) (non-inverse)
@@ -1416,7 +1418,8 @@ class RIEnetLayer(layers.Layer):
             - ``'covariance'``: cleaned covariance matrix.
             - ``'correlation'``: cleaned correlation matrix.
             - ``'input_transformed'``: lag-transformed returns.
-            - ``'input_zscores'``: lag-transformed returns standardized per asset.
+            - ``'input_zscore'``: lag-transformed returns standardized per asset.
+            - ``'input_zscores'``: alias of ``'input_zscore'``.
             - ``'eigenvalues'``: cleaned eigenvalues (non-inverse).
             - ``'eigenvectors'``: eigenvectors from decomposition.
             - ``'transformed_std'``: transformed standard deviations (non-inverse).
@@ -1462,13 +1465,16 @@ class RIEnetLayer(layers.Layer):
         """
         super().__init__(name=name, **kwargs)
 
+        output_aliases = {
+            'input_zscores': 'input_zscore',
+        }
         allowed_outputs = (
             'weights',
             'precision',
             'covariance',
             'correlation',
             'input_transformed',
-            'input_zscores',
+            'input_zscore',
             'eigenvalues',
             'eigenvectors',
             'transformed_std',
@@ -1479,13 +1485,15 @@ class RIEnetLayer(layers.Layer):
             if output_type == 'all':
                 components = list(allowed_outputs)
             else:
-                if output_type not in allowed_outputs:
+                canonical_output = output_aliases.get(output_type, output_type)
+                if canonical_output not in allowed_outputs:
                     raise ValueError(
                         "output_type must be one of "
                         "'weights', 'precision', 'covariance', 'correlation', "
-                        "'input_transformed', 'input_zscores', "
+                        "'input_transformed', 'input_zscore', "
                         "'eigenvalues', 'eigenvectors', "
-                        "'transformed_std', or 'all'"
+                        "'transformed_std', or 'all' "
+                        "(alias: 'input_zscores')"
                     )
                 components = [output_type]
         else:
@@ -1497,21 +1505,24 @@ class RIEnetLayer(layers.Layer):
                 if entry == 'all':
                     expanded.extend(allowed_outputs)
                     continue
-                if entry not in allowed_outputs:
+                canonical_entry = output_aliases.get(entry, entry)
+                if canonical_entry not in allowed_outputs:
                     raise ValueError(
                         "All requested outputs must be in "
                         "{'weights', 'precision', 'covariance', 'correlation', "
-                        "'input_transformed', 'input_zscores', "
+                        "'input_transformed', 'input_zscore', "
                         "'eigenvalues', 'eigenvectors', "
-                        "'transformed_std', 'all'}"
+                        "'transformed_std', 'all'} "
+                        "(alias: 'input_zscores')"
                     )
                 expanded.append(entry)
             seen = set()
             components = []
             for entry in expanded:
-                if entry not in seen:
+                canonical_entry = output_aliases.get(entry, entry)
+                if canonical_entry not in seen:
                     components.append(entry)
-                    seen.add(entry)
+                    seen.add(canonical_entry)
 
         self.output_components = tuple(components)
         self.output_type = components[0] if len(components) == 1 else tuple(components)
@@ -1519,7 +1530,10 @@ class RIEnetLayer(layers.Layer):
         self._need_covariance = 'covariance' in self.output_components
         self._need_correlation = 'correlation' in self.output_components
         self._need_weights = 'weights' in self.output_components
-        self._need_input_zscores = 'input_zscores' in self.output_components
+        self._need_input_zscores = (
+            'input_zscore' in self.output_components
+            or 'input_zscores' in self.output_components
+        )
         self._need_eigenvalues = 'eigenvalues' in self.output_components
         self._need_eigenvectors = 'eigenvectors' in self.output_components
         self._need_transformed_std = 'transformed_std' in self.output_components
@@ -1869,7 +1883,7 @@ class RIEnetLayer(layers.Layer):
             - ``eigenvectors``: ``(batch, n_stocks, n_stocks)``
             - ``transformed_std``: ``(batch, n_stocks, 1)`` non-inverse transformed std
             - ``input_transformed``: ``(batch, n_stocks, n_days)``
-            - ``input_zscores``: ``(batch, n_stocks, n_days)`` lag-transformed z-scores
+            - ``input_zscore``: ``(batch, n_stocks, n_days)`` lag-transformed z-scores
         """
         need_precision = self._need_precision
         need_covariance = self._need_covariance
@@ -1936,7 +1950,9 @@ class RIEnetLayer(layers.Layer):
         # Standardize returns
         zscores = (input_transformed - mean) / std
 
-        if need_input_zscores:
+        if 'input_zscore' in self.output_components:
+            results['input_zscore'] = zscores
+        if 'input_zscores' in self.output_components:
             results['input_zscores'] = zscores
 
         if not need_spectral_branch:
@@ -2108,7 +2124,7 @@ class RIEnetLayer(layers.Layer):
         def shape_for(component: str) -> Tuple[int, ...]:
             if component in {'weights', 'eigenvalues', 'transformed_std'}:
                 return (batch_size, n_stocks, 1)
-            if component in {'input_transformed', 'input_zscores'}:
+            if component in {'input_transformed', 'input_zscore', 'input_zscores'}:
                 return (batch_size, n_stocks, n_days)
             if component == 'eigenvectors':
                 return (batch_size, n_stocks, n_stocks)
