@@ -204,6 +204,28 @@ class TestRIEnetLayer:
         assert outputs['eigenvectors'].shape == (batch_size, n_stocks, n_stocks)
         assert outputs['transformed_std'].shape == (batch_size, n_stocks, 1)
 
+    def test_input_zscores_output_matches_standardized_lag_transform(self):
+        """input_zscores should expose the standardized lag-transformed inputs."""
+        layer = RIEnetLayer(output_type=['input_transformed', 'input_zscores'])
+
+        batch_size, n_stocks, n_days = 2, 5, 20
+        inputs = tf.random.normal((batch_size, n_stocks, n_days))
+        outputs = layer(inputs)
+
+        assert isinstance(outputs, dict)
+        assert set(outputs.keys()) == {'input_transformed', 'input_zscores'}
+        assert outputs['input_transformed'].shape == (batch_size, n_stocks, n_days)
+        assert outputs['input_zscores'].shape == (batch_size, n_stocks, n_days)
+
+        std, mean = layer.std_layer(outputs['input_transformed'])
+        expected_zscores = (outputs['input_transformed'] - mean) / std
+        np.testing.assert_allclose(
+            outputs['input_zscores'].numpy(),
+            expected_zscores.numpy(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
     def test_eigen_outputs_skip_std_transform_allocation(self):
         """Eigen-only outputs should not allocate std_transform trainable layers."""
         layer = RIEnetLayer(output_type=['eigenvalues', 'eigenvectors'])
@@ -230,6 +252,7 @@ class TestRIEnetLayer:
             'covariance',
             'correlation',
             'input_transformed',
+            'input_zscores',
             'eigenvalues',
             'eigenvectors',
             'transformed_std',
@@ -874,6 +897,18 @@ class TestCustomLayers:
         layer = RIEnetLayer(output_type=['input_transformed'],
                                    normalize_transformed_variance=False,
                                    name='test_input_transformed')
+        batch, n_assets, n_days = 2, 3, 5
+        inputs = tf.random.normal((batch, n_assets, n_days))
+        outputs = layer(inputs)
+        assert outputs.shape == (batch, n_assets, n_days)
+
+    def test_compact_layer_input_zscores_output(self):
+        """Layer can emit lag-transformed z-scores before correlation estimation."""
+        layer = RIEnetLayer(
+            output_type=['input_zscores'],
+            normalize_transformed_variance=False,
+            name='test_input_zscores',
+        )
         batch, n_assets, n_days = 2, 3, 5
         inputs = tf.random.normal((batch, n_assets, n_days))
         outputs = layer(inputs)

@@ -280,6 +280,7 @@ def test_rienet_model_roundtrip_keras_preserves_outputs_and_names(tmp_path):
             "eigenvectors",
             "transformed_std",
             "input_transformed",
+            "input_zscores",
         ],
         name="rienet_layer",
     )(inputs)

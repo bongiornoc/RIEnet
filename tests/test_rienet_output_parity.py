@@ -78,6 +78,7 @@ def legacy_reference_forward(
     need_covariance = layer._need_covariance
     need_correlation = layer._need_correlation
     need_weights = layer._need_weights
+    need_input_zscores = layer._need_input_zscores
     need_eigenvalues = layer._need_eigenvalues
     need_eigenvectors = layer._need_eigenvectors
     need_transformed_std = layer._need_transformed_std
@@ -120,7 +121,7 @@ def legacy_reference_forward(
         results["transformed_std"] = transformed_std
 
     need_spectral_branch = layer._need_spectral_branch
-    if not need_spectral_branch:
+    if not need_input_zscores and not need_spectral_branch:
         return (
             results[layer.output_components[0]]
             if len(layer.output_components) == 1
@@ -128,6 +129,17 @@ def legacy_reference_forward(
         )
 
     zscores = (input_transformed - mean) / std
+
+    if need_input_zscores:
+        results["input_zscores"] = zscores
+
+    if not need_spectral_branch:
+        return (
+            results[layer.output_components[0]]
+            if len(layer.output_components) == 1
+            else results
+        )
+
     correlation_matrix = layer.covariance_layer(zscores)
 
     attributes = None
@@ -256,6 +268,7 @@ def assert_weight_sums_to_one(outputs: Any) -> None:
 
 OUTPUT_CASES = [
     "input_transformed",
+    "input_zscores",
     "transformed_std",
     "eigenvalues",
     "eigenvectors",
@@ -263,6 +276,7 @@ OUTPUT_CASES = [
     "covariance",
     "precision",
     "weights",
+    ["weights", "input_zscores"],
     ["weights", "transformed_std"],
     ["weights", "eigenvalues"],
     ["weights", "eigenvectors"],
@@ -292,4 +306,3 @@ def test_rienet_outputs_match_legacy_reference(output_type):
     assert_outputs_match(actual, expected, rtol=1e-5, atol=1e-6)
     if "weights" in layer.output_components:
         assert_weight_sums_to_one(actual)
-

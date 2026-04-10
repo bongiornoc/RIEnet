@@ -117,13 +117,14 @@ weights = RIEnetLayer(output_type='weights')(returns)
 # Precision matrix only
 precision_matrix = RIEnetLayer(output_type='precision')(returns)
 
-# Precision, covariance, and the lag-transformed inputs in one pass
+# Precision, covariance, lag-transformed inputs, and their z-scores in one pass
 outputs = RIEnetLayer(
-    output_type=['precision', 'covariance', 'input_transformed']
+    output_type=['precision', 'covariance', 'input_transformed', 'input_zscores']
 )(returns)
 precision_matrix = outputs['precision']
 covariance_matrix = outputs['covariance']
 lagged_inputs = outputs['input_transformed']
+lagged_zscores = outputs['input_zscores']
 
 # Spectral components (non-inverse)
 spectral = RIEnetLayer(
@@ -132,6 +133,11 @@ spectral = RIEnetLayer(
 cleaned_eigenvalues = spectral['eigenvalues']   # (batch, n_stocks, 1)
 eigenvectors = spectral['eigenvectors']         # (batch, n_stocks, n_stocks)
 transformed_std = spectral['transformed_std']   # (batch, n_stocks, 1)
+
+# Just the standardized lag-transformed inputs, right before correlation estimation
+lagged_zscores_only = RIEnetLayer(
+    output_type='input_zscores'
+)(returns)
 
 # Optional: disable variance normalisation (do not use it with end-to-end GMV training)
 raw_covariance = RIEnetLayer(
@@ -145,6 +151,10 @@ raw_covariance = RIEnetLayer(
 > covariance rescalings and the layer keeps the implied variance scale centred
 > around one. Disable the normalisation only when using alternative objectives
 > where the absolute volatility scale must be preserved.
+
+`input_zscores` is the lag-transformed input after de-meaning and division by the
+sample standard deviation along the lookback axis, i.e. the exact tensor used to
+build the correlation matrix.
 
 ### Using `LagTransformLayer` Directly
 

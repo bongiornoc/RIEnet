@@ -52,6 +52,7 @@ OutputComponent = Literal[
     "covariance",
     "correlation",
     "input_transformed",
+    "input_zscores",
     "eigenvalues",
     "eigenvectors",
     "transformed_std",
@@ -1305,9 +1306,9 @@ class RIEnetLayer(layers.Layer):
     output_type : OutputType, default 'weights'
         Component(s) to return. Each entry must belong to
         {'weights', 'precision', 'covariance', 'correlation', 'input_transformed',
-        'eigenvalues', 'eigenvectors', 'transformed_std'} or the special string
-        'all'. When multiple components are requested a dictionary mapping component name
-        to tensor is returned.
+        'input_zscores', 'eigenvalues', 'eigenvectors', 'transformed_std'} or the
+        special string 'all'. When multiple components are requested a dictionary
+        mapping component name to tensor is returned.
     recurrent_layer_sizes : Sequence[int], optional
         Hidden sizes of the recurrent cleaning block. Defaults to [16] matching the
         compact GMV network in the paper. If a sequence with multiple integers is
@@ -1355,6 +1356,7 @@ class RIEnetLayer(layers.Layer):
         - 'weights' -> (batch_size, n_stocks, 1)
         - 'precision', 'covariance', or 'correlation' -> (batch_size, n_stocks, n_stocks)
         - 'input_transformed' -> (batch_size, n_stocks, n_days)
+        - 'input_zscores' -> (batch_size, n_stocks, n_days)
         - 'eigenvalues' -> (batch_size, n_stocks, 1) (cleaned, non-inverse)
         - 'eigenvectors' -> (batch_size, n_stocks, n_stocks)
         - 'transformed_std' -> (batch_size, n_stocks, 1) (non-inverse)
@@ -1414,6 +1416,7 @@ class RIEnetLayer(layers.Layer):
             - ``'covariance'``: cleaned covariance matrix.
             - ``'correlation'``: cleaned correlation matrix.
             - ``'input_transformed'``: lag-transformed returns.
+            - ``'input_zscores'``: lag-transformed returns standardized per asset.
             - ``'eigenvalues'``: cleaned eigenvalues (non-inverse).
             - ``'eigenvectors'``: eigenvectors from decomposition.
             - ``'transformed_std'``: transformed standard deviations (non-inverse).
@@ -1465,6 +1468,7 @@ class RIEnetLayer(layers.Layer):
             'covariance',
             'correlation',
             'input_transformed',
+            'input_zscores',
             'eigenvalues',
             'eigenvectors',
             'transformed_std',
@@ -1479,7 +1483,8 @@ class RIEnetLayer(layers.Layer):
                     raise ValueError(
                         "output_type must be one of "
                         "'weights', 'precision', 'covariance', 'correlation', "
-                        "'input_transformed', 'eigenvalues', 'eigenvectors', "
+                        "'input_transformed', 'input_zscores', "
+                        "'eigenvalues', 'eigenvectors', "
                         "'transformed_std', or 'all'"
                     )
                 components = [output_type]
@@ -1496,7 +1501,8 @@ class RIEnetLayer(layers.Layer):
                     raise ValueError(
                         "All requested outputs must be in "
                         "{'weights', 'precision', 'covariance', 'correlation', "
-                        "'input_transformed', 'eigenvalues', 'eigenvectors', "
+                        "'input_transformed', 'input_zscores', "
+                        "'eigenvalues', 'eigenvectors', "
                         "'transformed_std', 'all'}"
                     )
                 expanded.append(entry)
@@ -1513,6 +1519,7 @@ class RIEnetLayer(layers.Layer):
         self._need_covariance = 'covariance' in self.output_components
         self._need_correlation = 'correlation' in self.output_components
         self._need_weights = 'weights' in self.output_components
+        self._need_input_zscores = 'input_zscores' in self.output_components
         self._need_eigenvalues = 'eigenvalues' in self.output_components
         self._need_eigenvectors = 'eigenvectors' in self.output_components
         self._need_transformed_std = 'transformed_std' in self.output_components
@@ -1528,7 +1535,9 @@ class RIEnetLayer(layers.Layer):
             or self._need_transformed_std
         )
         self._need_pipeline_outputs = (
-            self._need_structural_outputs or self._need_spectral_outputs
+            self._need_structural_outputs
+            or self._need_spectral_outputs
+            or self._need_input_zscores
         )
         self._need_inverse_std_branch = (
             self._need_precision
@@ -1860,11 +1869,13 @@ class RIEnetLayer(layers.Layer):
             - ``eigenvectors``: ``(batch, n_stocks, n_stocks)``
             - ``transformed_std``: ``(batch, n_stocks, 1)`` non-inverse transformed std
             - ``input_transformed``: ``(batch, n_stocks, n_days)``
+            - ``input_zscores``: ``(batch, n_stocks, n_days)`` lag-transformed z-scores
         """
         need_precision = self._need_precision
         need_covariance = self._need_covariance
         need_correlation = self._need_correlation
         need_weights = self._need_weights
+        need_input_zscores = self._need_input_zscores
         need_eigenvalues = self._need_eigenvalues
         need_eigenvectors = self._need_eigenvectors
         need_transformed_std = self._need_transformed_std
@@ -1915,7 +1926,7 @@ class RIEnetLayer(layers.Layer):
             results['transformed_std'] = transformed_std
 
         need_spectral_branch = self._need_spectral_branch
-        if not need_spectral_branch:
+        if not need_input_zscores and not need_spectral_branch:
             return (
                 results[self.output_components[0]]
                 if len(self.output_components) == 1
@@ -1924,6 +1935,16 @@ class RIEnetLayer(layers.Layer):
 
         # Standardize returns
         zscores = (input_transformed - mean) / std
+
+        if need_input_zscores:
+            results['input_zscores'] = zscores
+
+        if not need_spectral_branch:
+            return (
+                results[self.output_components[0]]
+                if len(self.output_components) == 1
+                else results
+            )
         
         # Compute correlation matrix
         correlation_matrix = self.covariance_layer(zscores)
@@ -2087,7 +2108,7 @@ class RIEnetLayer(layers.Layer):
         def shape_for(component: str) -> Tuple[int, ...]:
             if component in {'weights', 'eigenvalues', 'transformed_std'}:
                 return (batch_size, n_stocks, 1)
-            if component == 'input_transformed':
+            if component in {'input_transformed', 'input_zscores'}:
                 return (batch_size, n_stocks, n_days)
             if component == 'eigenvectors':
                 return (batch_size, n_stocks, n_stocks)
