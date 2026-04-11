@@ -20,14 +20,16 @@ class StandardDeviationLayer(layers.Layer):
     Layer for computing sample standard deviation and mean.
     
     This layer computes the sample standard deviation and mean along a specified axis,
-    with optional demeaning for statistical preprocessing.
+    with configurable population/sample denominator.
     
     Parameters
     ----------
     axis : int, default 1
         Axis along which to compute statistics
     demean : bool, default False
-        Whether to use an unbiased denominator (n-1)
+        The input is always centered before variance is computed. If ``False``,
+        use the population denominator ``n``. If ``True``, use the unbiased
+        sample denominator ``n-1``.
     epsilon : float, optional
         Small epsilon for numerical stability
     name : str, optional
@@ -49,7 +51,7 @@ class StandardDeviationLayer(layers.Layer):
 
     def call(self, x: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
         """
-        Compute per-axis sample standard deviation and mean.
+        Compute per-axis standard deviation and mean.
         
         Parameters
         ----------
@@ -62,7 +64,8 @@ class StandardDeviationLayer(layers.Layer):
         -------
         tuple of tf.Tensor
             ``(std, mean)`` where both tensors have the same rank as ``x`` and
-            singleton size on ``self.axis``.
+            singleton size on ``self.axis``. ``mean`` is always subtracted before
+            variance is computed; ``self.demean`` only selects the denominator.
         """
         x_work, original_dtype = ensure_float32(x)
         dtype = x_work.dtype
@@ -367,6 +370,8 @@ class CustomNormalizationLayer(layers.Layer):
         if name is None:
             raise ValueError("CustomNormalizationLayer must have a name.")
         super().__init__(name=name, **kwargs)
+        if mode not in ('sum', 'inverse'):
+            raise ValueError("mode must be either 'sum' or 'inverse'.")
         self.mode = mode
         self.axis = axis
         if inverse_power <= 0:
@@ -401,7 +406,13 @@ class CustomNormalizationLayer(layers.Layer):
         denom_axis = tf.reduce_sum(x_work, axis=self.axis, keepdims=True)
 
         if self.mode == 'sum':
-            x_work = n * x_work / tf.maximum(denom_axis, epsilon)
+            sign = tf.where(denom_axis >= 0, tf.ones_like(denom_axis), -tf.ones_like(denom_axis))
+            safe_denom = tf.where(
+                tf.abs(denom_axis) < epsilon,
+                sign * epsilon,
+                denom_axis,
+            )
+            x_work = n * x_work / safe_denom
         elif self.mode == 'inverse':
             x_work = tf.maximum(x_work, epsilon)
             inv = tf.math.pow(x_work, -self.inverse_power)
