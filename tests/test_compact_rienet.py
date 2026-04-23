@@ -112,6 +112,17 @@ class TestRIEnetLayer:
 
         expected_shape = (batch_size, n_stocks, n_stocks)
         assert outputs.shape == expected_shape, f"Expected {expected_shape}, got {outputs.shape}"
+
+    def test_covariance_output_keeps_internal_correlation_cleaner_in_correlation_mode(self):
+        """RIEnet covariance output must still use the internal correlation branch."""
+        layer = RIEnetLayer(output_type='covariance', name='test_covariance_internal_mode')
+
+        assert layer.correlation_eigen_transform is not None
+        assert layer.correlation_eigen_transform.output_type == 'correlation'
+
+        _ = layer(tf.random.normal((2, 4, 16)))
+
+        assert layer.correlation_eigen_transform.output_type == 'correlation'
     
     def test_correlation_output_shape(self):
         """Test that correlation output has correct shape."""
@@ -716,6 +727,7 @@ class TestCustomLayers:
         layer = CorrelationEigenTransformLayer(
             output_type=[
                 'correlation',
+                'covariance',
                 'inverse_correlation',
                 'eigenvalues',
                 'eigenvectors',
@@ -731,12 +743,14 @@ class TestCustomLayers:
         assert isinstance(outputs, dict)
         assert set(outputs.keys()) == {
             'correlation',
+            'covariance',
             'inverse_correlation',
             'eigenvalues',
             'eigenvectors',
             'inverse_eigenvalues',
         }
         assert outputs['correlation'].shape == (2, 4, 4)
+        assert outputs['covariance'].shape == (2, 4, 4)
         assert outputs['inverse_correlation'].shape == (2, 4, 4)
         assert outputs['eigenvalues'].shape == (2, 4, 1)
         assert outputs['eigenvectors'].shape == (2, 4, 4)
@@ -769,6 +783,50 @@ class TestCustomLayers:
         )
         np.testing.assert_allclose(
             tf.linalg.diag_part(reconstructed).numpy(),
+            1.0,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+    def test_correlation_eigen_transform_covariance_reconstructs_raw_eigensystem(self):
+        """Standalone covariance output must skip correlation-specific rescaling."""
+        layer = CorrelationEigenTransformLayer(
+            output_type=['covariance', 'correlation'],
+            name='test_corr_eig_transform_covariance',
+        )
+
+        raw = tf.random.normal((2, 4, 4))
+        covariance = tf.matmul(raw, raw, transpose_b=True)
+
+        outputs = layer(covariance)
+        eigenvalues, eigenvectors = layer.spectral_decomp(covariance)
+        raw_inverse_eigenvalues = layer.eigenvalue_transform(
+            eigenvalues,
+            apply_normalization=False,
+        )
+        raw_cleaned_eigenvalues = tf.math.reciprocal(
+            tf.maximum(
+                raw_inverse_eigenvalues,
+                tf.cast(layer.epsilon, raw_inverse_eigenvalues.dtype),
+            )
+        )
+        reconstructed_covariance = EigenProductLayer(
+            name='test_corr_eig_transform_covariance_product'
+        )(raw_cleaned_eigenvalues, eigenvectors)
+
+        np.testing.assert_allclose(
+            outputs['covariance'].numpy(),
+            reconstructed_covariance.numpy(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        assert float(
+            tf.reduce_max(
+                tf.abs(tf.linalg.diag_part(outputs['covariance']) - 1.0)
+            ).numpy()
+        ) > 1e-3
+        np.testing.assert_allclose(
+            tf.linalg.diag_part(outputs['correlation']).numpy(),
             1.0,
             rtol=1e-5,
             atol=1e-6,
@@ -829,7 +887,7 @@ class TestCustomLayers:
             recurrent_cell='GRU',
             recurrent_direction='forward',
             final_hidden_layer_sizes=(4,),
-            output_type=['correlation', 'inverse_correlation', 'inverse_eigenvalues'],
+            output_type=['correlation', 'covariance', 'inverse_correlation', 'inverse_eigenvalues'],
             name='test_corr_eig_transform_ser'
         )
 
@@ -843,8 +901,14 @@ class TestCustomLayers:
         assert isinstance(deserialized, CorrelationEigenTransformLayer)
         output = deserialized(correlation, attributes=attributes)
         assert isinstance(output, dict)
-        assert set(output.keys()) == {'correlation', 'inverse_correlation', 'inverse_eigenvalues'}
+        assert set(output.keys()) == {
+            'correlation',
+            'covariance',
+            'inverse_correlation',
+            'inverse_eigenvalues',
+        }
         assert output['correlation'].shape == (2, 4, 4)
+        assert output['covariance'].shape == (2, 4, 4)
         assert output['inverse_correlation'].shape == (2, 4, 4)
         assert output['inverse_eigenvalues'].shape == (2, 4, 1)
 

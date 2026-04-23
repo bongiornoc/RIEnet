@@ -35,6 +35,7 @@ RecurrentCellType = Literal["GRU", "LSTM"]
 RecurrentDirectionType = Literal["bidirectional", "forward", "backward"]
 CorrelationTransformOutput = Literal[
     "correlation",
+    "covariance",
     "inverse_correlation",
     "eigenvalues",
     "eigenvectors",
@@ -373,7 +374,12 @@ class DeepRecurrentLayer(layers.Layer):
 
         super().build(input_shape)
 
-    def call(self, inputs: tf.Tensor, training: Optional[bool] = None) -> tf.Tensor:
+    def call(
+        self,
+        inputs: tf.Tensor,
+        training: Optional[bool] = None,
+        apply_normalization: bool = True,
+    ) -> tf.Tensor:
         """
         Forward pass through the recurrent stack and projection head.
         
@@ -383,6 +389,8 @@ class DeepRecurrentLayer(layers.Layer):
             Input sequence tensor with shape ``(batch, timesteps, features)``.
         training : bool, optional
             Keras training flag controlling recurrent/dense dropout.
+        apply_normalization : bool, default True
+            Whether to apply the optional configured output normalization.
             
         Returns
         -------
@@ -396,7 +404,7 @@ class DeepRecurrentLayer(layers.Layer):
             
         outputs = self.final_deep_dense(x, training=training)
         
-        if self._normalizer is not None:
+        if self._normalizer is not None and apply_normalization:
             outputs = self._normalizer(outputs)
             
         return tf.squeeze(outputs, axis=-1)
@@ -422,7 +430,7 @@ class DeepRecurrentLayer(layers.Layer):
 @tf.keras.utils.register_keras_serializable(package='rienet')
 class CorrelationEigenTransformLayer(layers.Layer):
     """
-    Transform a correlation matrix by cleaning its eigenvalues.
+    Transform a correlation-like matrix by cleaning its eigenvalues.
 
     The layer performs:
     1. Eigen-decomposition of the input correlation matrix.
@@ -430,6 +438,8 @@ class CorrelationEigenTransformLayer(layers.Layer):
     3. Recurrent transformation of enriched eigenvalue features in inverse-eigenvalue
        space.
     4. Reconstruction of a cleaned correlation matrix with diagonal rescaling.
+       Optionally, reconstruction of a cleaned covariance matrix without
+       correlation-specific eigenvalue/eigenvector corrections.
 
     Parameters
     ----------
@@ -446,8 +456,9 @@ class CorrelationEigenTransformLayer(layers.Layer):
         Activation for optional dense hidden layers.
     output_type : CorrelationTransformOutputType, default 'correlation'
         Requested output component(s). Allowed values are:
-        'correlation', 'inverse_correlation', 'eigenvalues', 'eigenvectors',
-        'inverse_eigenvalues', or 'all'. Multiple outputs are returned as a dictionary.
+        'correlation', 'covariance', 'inverse_correlation', 'eigenvalues',
+        'eigenvectors', 'inverse_eigenvalues', or 'all'. Multiple outputs are
+        returned as a dictionary.
     epsilon : float, optional
         Numerical epsilon used before reciprocal.
     name : str, optional
@@ -456,7 +467,9 @@ class CorrelationEigenTransformLayer(layers.Layer):
     Call Arguments
     --------------
     correlation_matrix : tf.Tensor
-        Correlation matrix tensor of shape ``(batch, n_assets, n_assets)``.
+        Symmetric input matrix tensor of shape ``(batch, n_assets, n_assets)``.
+        Correlation-style outputs assume a correlation matrix input. The standalone
+        ``'covariance'`` output may be used with a covariance-like SPD input.
     attributes : tf.Tensor, optional
         Optional attribute tensor with shape ``(batch, k)`` or ``(batch, n_assets, k)``
         concatenated to each eigenvalue feature vector.
@@ -471,6 +484,7 @@ class CorrelationEigenTransformLayer(layers.Layer):
 
     _ALLOWED_OUTPUTS = (
         "correlation",
+        "covariance",
         "inverse_correlation",
         "eigenvalues",
         "eigenvectors",
@@ -512,6 +526,8 @@ class CorrelationEigenTransformLayer(layers.Layer):
         output_type : CorrelationTransformOutputType, default 'correlation'
             Requested output component(s). Allowed values:
             - ``'correlation'``: cleaned correlation matrix.
+            - ``'covariance'``: cleaned covariance matrix reconstructed without
+              correlation-specific eigenvalue normalization or eigenvector correction.
             - ``'inverse_correlation'``: cleaned inverse correlation matrix.
             - ``'eigenvalues'``: cleaned (non-inverse) eigenvalues.
             - ``'eigenvectors'``: eigenvectors from decomposition.
@@ -595,8 +611,8 @@ class CorrelationEigenTransformLayer(layers.Layer):
             if output_type not in self._ALLOWED_OUTPUTS:
                 raise ValueError(
                     "output_type must be one of "
-                    "{'correlation', 'inverse_correlation', 'eigenvalues', 'eigenvectors', "
-                    "'inverse_eigenvalues', 'all'}."
+                    "{'correlation', 'covariance', 'inverse_correlation', 'eigenvalues', "
+                    "'eigenvectors', 'inverse_eigenvalues', 'all'}."
                 )
             return [output_type]
 
@@ -612,8 +628,8 @@ class CorrelationEigenTransformLayer(layers.Layer):
             if entry not in self._ALLOWED_OUTPUTS:
                 raise ValueError(
                     "All requested outputs must be in "
-                    "{'correlation', 'inverse_correlation', 'eigenvalues', 'eigenvectors', "
-                    "'inverse_eigenvalues', 'all'}."
+                    "{'correlation', 'covariance', 'inverse_correlation', 'eigenvalues', "
+                    "'eigenvectors', 'inverse_eigenvalues', 'all'}."
                 )
             expanded.append(entry)
 
@@ -766,6 +782,15 @@ class CorrelationEigenTransformLayer(layers.Layer):
         )
         return restore_dtype(inverse_work, original_dtype)
 
+    def _normalize_inverse_eigenvalues(self, inverse_eigenvalues: tf.Tensor) -> tf.Tensor:
+        """Apply the correlation-style eigenvalue normalization used by the layer."""
+        if self.eigenvalue_transform._normalizer is None:
+            return inverse_eigenvalues
+        normalized = self.eigenvalue_transform._normalizer(
+            tf.expand_dims(inverse_eigenvalues, axis=-1)
+        )
+        return tf.squeeze(normalized, axis=-1)
+
     def call(self,
              correlation_matrix: tf.Tensor,
              attributes: Optional[tf.Tensor] = None,
@@ -799,8 +824,8 @@ class CorrelationEigenTransformLayer(layers.Layer):
         tf.Tensor or dict[str, tf.Tensor]
             If one component is requested, returns that tensor directly.
             If multiple components are requested, returns a dictionary keyed by:
-            ``'correlation'``, ``'inverse_correlation'``, ``'eigenvalues'``,
-            ``'eigenvectors'``, ``'inverse_eigenvalues'``.
+            ``'correlation'``, ``'covariance'``, ``'inverse_correlation'``,
+            ``'eigenvalues'``, ``'eigenvectors'``, ``'inverse_eigenvalues'``.
         """
         components = (
             self._resolve_output_components(output_type)
@@ -808,16 +833,18 @@ class CorrelationEigenTransformLayer(layers.Layer):
             else list(self.output_components)
         )
         need_correlation = 'correlation' in components
+        need_covariance = 'covariance' in components
         need_inverse_correlation = 'inverse_correlation' in components
         need_eigenvalues = 'eigenvalues' in components
         need_eigenvectors = 'eigenvectors' in components
-        need_inverse_eigenvalues = (
+        need_normalized_inverse_eigenvalues = (
             'inverse_eigenvalues' in components
             or need_eigenvalues
             or need_correlation
             or need_inverse_correlation
             or need_eigenvectors
         )
+        need_any_inverse_eigenvalues = need_normalized_inverse_eigenvalues or need_covariance
 
         corr_rank = correlation_matrix.shape.rank
         if corr_rank is not None and corr_rank != 3:
@@ -871,11 +898,13 @@ class CorrelationEigenTransformLayer(layers.Layer):
         if include_raw_eigenvectors:
             results['_raw_eigenvectors'] = eigenvectors
 
+        raw_inverse_eigenvalues = None
         transformed_inverse_eigenvalues = None
+        raw_eigenvalues = None
         transformed_eigenvalues = None
         direct_eigenvectors = None
 
-        if need_inverse_eigenvalues:
+        if need_any_inverse_eigenvalues:
             eigenvalue_features = eigenvalues
             if attributes is not None:
                 if attributes.shape.rank == 2:
@@ -904,10 +933,17 @@ class CorrelationEigenTransformLayer(layers.Layer):
                     "Use a separate layer instance for a different attribute width."
                 )
 
-            transformed_inverse_eigenvalues = self.eigenvalue_transform(
+            raw_inverse_eigenvalues = self.eigenvalue_transform(
                 eigenvalue_features,
                 training=training,
+                apply_normalization=False,
             )
+
+            if need_normalized_inverse_eigenvalues:
+                transformed_inverse_eigenvalues = self._normalize_inverse_eigenvalues(
+                    raw_inverse_eigenvalues
+                )
+
             if 'inverse_eigenvalues' in components:
                 results['inverse_eigenvalues'] = tf.expand_dims(
                     transformed_inverse_eigenvalues,
@@ -924,6 +960,14 @@ class CorrelationEigenTransformLayer(layers.Layer):
             if need_eigenvalues:
                 results['eigenvalues'] = tf.expand_dims(transformed_eigenvalues, axis=-1)
 
+        if need_covariance:
+            inverse_eigs_work, inverse_eigs_dtype = ensure_float32(raw_inverse_eigenvalues)
+            eps = epsilon_for_dtype(inverse_eigs_work.dtype, self.epsilon)
+            raw_eigenvalues_work = tf.math.reciprocal(
+                tf.maximum(inverse_eigs_work, eps)
+            )
+            raw_eigenvalues = restore_dtype(raw_eigenvalues_work, inverse_eigs_dtype)
+
         cleaned_correlation = None
         if need_correlation or need_inverse_correlation or need_eigenvectors:
             direct_eigenvectors = self.eigenvector_rescaler(
@@ -939,6 +983,12 @@ class CorrelationEigenTransformLayer(layers.Layer):
                 direct_eigenvectors,
             )
             results['correlation'] = cleaned_correlation
+
+        if need_covariance:
+            results['covariance'] = self.correlation_product(
+                raw_eigenvalues,
+                eigenvectors,
+            )
 
         if need_inverse_correlation:
             results['inverse_correlation'] = self._exact_inverse_from_rescaled_eigensystem(
@@ -963,7 +1013,7 @@ class CorrelationEigenTransformLayer(layers.Layer):
         n_assets = corr_shape[-1]
 
         def shape_for(component: str):
-            if component in {'correlation', 'inverse_correlation', 'eigenvectors'}:
+            if component in {'correlation', 'covariance', 'inverse_correlation', 'eigenvectors'}:
                 return (batch_size, n_assets, n_assets)
             return (batch_size, n_assets, 1)
 
