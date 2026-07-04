@@ -242,8 +242,8 @@ def assert_outputs_match(actual: Any, expected: Any, *, rtol: float, atol: float
     assert actual.shape == expected.shape
     assert actual.dtype == expected.dtype
     np.testing.assert_allclose(
-        actual.numpy(),
-        expected.numpy(),
+        tf.cast(actual, tf.float32).numpy(),
+        tf.cast(expected, tf.float32).numpy(),
         rtol=rtol,
         atol=atol,
     )

@@ -701,6 +701,64 @@ class TestCustomLayers:
             atol=1e-6,
         )
 
+    def test_correlation_eigen_transform_layer_dynamic_assets_with_batch_attributes(self):
+        """Layer should support dynamic n_assets with (batch, k) attributes."""
+        corr_input = tf.keras.Input(shape=(None, None), name='corr')
+        attrs_input = tf.keras.Input(shape=(3,), name='attrs')
+        output = CorrelationEigenTransformLayer(
+            name='test_corr_eig_transform_dyn_batch_attr'
+        )(corr_input, attributes=attrs_input)
+        model = tf.keras.Model([corr_input, attrs_input], output)
+
+        for batch_size, n_assets in ((2, 4), (1, 6)):
+            correlation = tf.eye(n_assets, batch_shape=[batch_size])
+            attributes = tf.random.normal((batch_size, 3))
+
+            cleaned = model([correlation, attributes], training=False)
+
+            assert cleaned.shape == (batch_size, n_assets, n_assets)
+            np.testing.assert_allclose(
+                cleaned.numpy(),
+                np.transpose(cleaned.numpy(), (0, 2, 1)),
+                rtol=1e-5,
+                atol=1e-6,
+            )
+            np.testing.assert_allclose(
+                tf.linalg.diag_part(cleaned).numpy(),
+                1.0,
+                rtol=1e-4,
+                atol=1e-5,
+            )
+
+    def test_correlation_eigen_transform_layer_dynamic_assets_with_factor_attributes(self):
+        """Layer should support dynamic n_assets with (batch, n_assets, k) attributes."""
+        corr_input = tf.keras.Input(shape=(None, None), name='corr')
+        attrs_input = tf.keras.Input(shape=(None, 3), name='factor_attrs')
+        output = CorrelationEigenTransformLayer(
+            name='test_corr_eig_transform_dyn_factor_attr'
+        )(corr_input, attributes=attrs_input)
+        model = tf.keras.Model([corr_input, attrs_input], output)
+
+        for batch_size, n_assets in ((2, 4), (1, 6)):
+            correlation = tf.eye(n_assets, batch_shape=[batch_size])
+            attributes = tf.random.normal((batch_size, n_assets, 3))
+
+            cleaned = model([correlation, attributes], training=False)
+
+            assert cleaned.shape == (batch_size, n_assets, n_assets)
+            np.testing.assert_allclose(
+                cleaned.numpy(),
+                np.transpose(cleaned.numpy(), (0, 2, 1)),
+                rtol=1e-5,
+                atol=1e-6,
+            )
+            np.testing.assert_allclose(
+                tf.linalg.diag_part(cleaned).numpy(),
+                1.0,
+                rtol=1e-4,
+                atol=1e-5,
+            )
+
     def test_correlation_eigen_transform_layer_inconsistent_feature_width_raises(self):
         """Changing attribute width on the same layer instance should fail clearly."""
         layer = CorrelationEigenTransformLayer(name='test_corr_eig_transform_feat_width')

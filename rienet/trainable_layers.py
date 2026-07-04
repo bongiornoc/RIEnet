@@ -434,7 +434,8 @@ class CorrelationEigenTransformLayer(layers.Layer):
 
     The layer performs:
     1. Eigen-decomposition of the input correlation matrix.
-    2. Optional enrichment of each eigenvalue with per-batch attributes ``(b, k)``.
+    2. Optional enrichment of each eigenvalue with batch-level attributes
+       ``(batch, k)`` or per-factor attributes ``(batch, n_assets, k)``.
     3. Recurrent transformation of enriched eigenvalue features in inverse-eigenvalue
        space.
     4. Reconstruction of a cleaned correlation matrix with diagonal rescaling.
@@ -480,6 +481,47 @@ class CorrelationEigenTransformLayer(layers.Layer):
     -------
     tf.Tensor or dict
         Output selected by ``output_type``.
+
+    Examples
+    --------
+    Clean a correlation matrix without auxiliary attributes::
+
+        layer = CorrelationEigenTransformLayer()
+        corr = tf.eye(6, batch_shape=[4])
+        cleaned_corr = layer(corr)
+
+    Broadcast batch-level attributes to every factor/eigenvalue::
+
+        batch_attrs = tf.random.normal((4, 3))
+        cleaned_corr = layer(corr, attributes=batch_attrs)
+
+    Pass per-factor attributes aligned with the dynamic ``n_assets`` axis::
+
+        factor_attrs = tf.random.normal((4, 6, 3))
+        cleaned_corr = layer(corr, attributes=factor_attrs)
+
+    Request multiple outputs for a single call::
+
+        details = layer(
+            corr,
+            attributes=batch_attrs,
+            output_type=[
+                "correlation",
+                "inverse_correlation",
+                "eigenvalues",
+                "eigenvectors",
+                "inverse_eigenvalues",
+            ],
+        )
+        cleaned_corr = details["correlation"]
+        inverse_corr = details["inverse_correlation"]
+
+    Use dynamic asset counts in a Keras model::
+
+        corr_in = tf.keras.Input(shape=(None, None), name="corr")
+        attrs_in = tf.keras.Input(shape=(None, 3), name="factor_attrs")
+        cleaned = CorrelationEigenTransformLayer()(corr_in, attributes=attrs_in)
+        model = tf.keras.Model([corr_in, attrs_in], cleaned)
     """
 
     _ALLOWED_OUTPUTS = (
@@ -653,7 +695,7 @@ class CorrelationEigenTransformLayer(layers.Layer):
         attributes_shape : tuple or TensorShape, optional
             Optional attributes shape:
             - ``(batch, k)`` for batch-level attributes.
-            - ``(batch, n_assets, k)`` for per-asset attributes.
+            - ``(batch, n_assets, k)`` for per-factor attributes.
         """
         raw_input_shape = correlation_matrix_shape
 
@@ -808,7 +850,8 @@ class CorrelationEigenTransformLayer(layers.Layer):
             Optional auxiliary features concatenated to each eigenvalue channel.
             Accepted shapes:
             - ``(batch, k)``: batch-level attributes broadcast to all assets.
-            - ``(batch, n_assets, k)``: per-asset attributes.
+            - ``(batch, n_assets, k)``: per-factor attributes aligned with the
+              eigenvalue/factor axis.
         output_type : CorrelationTransformOutputType, optional
             Optional per-call override of requested output components.
             If omitted, the instance-level ``output_type`` from ``__init__`` is used.
@@ -826,6 +869,19 @@ class CorrelationEigenTransformLayer(layers.Layer):
             If multiple components are requested, returns a dictionary keyed by:
             ``'correlation'``, ``'covariance'``, ``'inverse_correlation'``,
             ``'eigenvalues'``, ``'eigenvectors'``, ``'inverse_eigenvalues'``.
+
+        Examples
+        --------
+        ``layer(corr)`` returns the cleaned correlation matrix.
+
+        ``layer(corr, attributes=batch_attrs)`` accepts ``batch_attrs`` with
+        shape ``(batch, k)`` and broadcasts it across the factor axis.
+
+        ``layer(corr, attributes=factor_attrs)`` accepts ``factor_attrs`` with
+        shape ``(batch, n_assets, k)`` aligned to the factor/eigenvalue axis.
+
+        ``layer(corr, output_type=["correlation", "eigenvalues"])`` returns a
+        dictionary with the requested components for that call only.
         """
         components = (
             self._resolve_output_components(output_type)
