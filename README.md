@@ -20,6 +20,18 @@ This repository is intended for:
 
 For a pyTorch implementation, please refer to the [RIEnet-torch](https://github.com/bongiornoc/RIEnet-torch) repository.
 
+## Release Notes
+
+### 1.1.9
+
+This release fixes a correctness bug in `EigenWeightsLayer` when `inverse_std`
+is provided. In earlier versions, inverse standard deviations were applied only
+to the left side of the inverse-covariance product, so the normalized result was
+not generally the exact unconstrained GMV portfolio. The layer now applies the
+scaling on both sides and matches the direct solution obtained from the inverse
+covariance matrix while retaining the efficient spectral computation. Users of
+this branch should upgrade to version 1.1.9.
+
 ## What this package provides
 
 - End-to-end training on a realized-variance objective for GMV portfolios
@@ -187,11 +199,13 @@ from rienet import EigenWeightsLayer
 layer = EigenWeightsLayer(name="gmv_weights")
 
 # Inputs
-eigenvectors = tf.random.normal((8, 20, 20))         # (..., n_assets, n_assets)
+eigenvectors = tf.linalg.qr(                         # (..., n_assets, n_assets)
+    tf.random.normal((8, 20, 20))
+)[0]
 inverse_eigenvalues = tf.random.uniform((8, 20, 1))  # (..., n_assets) or (..., n_assets, 1)
 inverse_std = tf.random.uniform((8, 20, 1))          # optional
 
-# Full GMV-like branch (includes inverse_std scaling)
+# Exact GMV branch from a correlation eigensystem and inverse standard deviations
 weights = layer(eigenvectors, inverse_eigenvalues, inverse_std)
 
 # Covariance-eigensystem branch (inverse_std omitted)
@@ -200,8 +214,11 @@ weights_cov = layer(eigenvectors, inverse_eigenvalues)
 
 Notes:
 - `inverse_std` is optional by design.
+- When `inverse_std` is provided, the eigenvectors and inverse eigenvalues must
+  describe the corresponding correlation matrix. The layer computes exact
+  unconstrained GMV weights without constructing or inverting the covariance matrix.
 - If `inverse_std` is omitted, the layer uses a dedicated branch with fewer operations
-  (it does not materialize a vector of ones).
+  for a covariance eigensystem (it does not materialize a vector of ones).
 - Output shape is always `(..., n_assets, 1)`, normalized to sum to one along assets.
 
 ### Using `CorrelationEigenTransformLayer` Directly

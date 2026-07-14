@@ -554,23 +554,23 @@ class EigenProductLayer(layers.Layer):
 @tf.keras.utils.register_keras_serializable(package='rienet')
 class EigenWeightsLayer(layers.Layer):
     """
-    Compute GMV-like portfolio weights from eigensystem quantities.
+    Compute exact unconstrained GMV weights from eigensystem quantities.
 
     This layer is intended for direct external use and accepts explicit inputs:
     eigenvectors, inverse eigenvalues, and optionally inverse standard deviations.
 
-    Let ``V`` be eigenvectors and ``lambda_inv`` inverse eigenvalues. Define::
+    Let ``V`` be orthonormal eigenvectors, ``lambda_inv`` inverse eigenvalues,
+    and ``d`` inverse standard deviations. When ``inverse_std`` is provided,
+    the eigensystem represents a correlation matrix ``C`` and the covariance is
+    ``Sigma = diag(d^-1) C diag(d^-1)``. The raw weights are computed as::
 
-        c_k = sum_i V_{ik}
-        s_k = lambda_inv_k * c_k
+        raw = d * V diag(lambda_inv) V^T d
 
-    The raw weights are computed as:
-    - with ``inverse_std`` provided:
-      ``raw_i = (sum_k V_{ik} s_k) * inverse_std_i``
-    - with ``inverse_std=None``:
-      ``raw_i = sum_k V_{ik} s_k``
+    This is exactly ``Sigma^-1 1`` without materializing or inverting ``Sigma``.
+    When ``inverse_std`` is omitted, the eigensystem represents the covariance
+    directly and the layer computes ``V diag(lambda_inv) V^T 1``.
 
-    Then the output is normalized to sum to one across assets.
+    In both cases, the output is normalized to sum to one across assets.
 
     Parameters
     ----------
@@ -582,13 +582,14 @@ class EigenWeightsLayer(layers.Layer):
     Call Arguments
     --------------
     eigenvectors : tf.Tensor
-        Tensor of shape ``(..., n_assets, n_assets)``.
+        Orthonormal eigenvectors with shape ``(..., n_assets, n_assets)``.
     inverse_eigenvalues : tf.Tensor
         Tensor of shape ``(..., n_assets)`` or ``(..., n_assets, 1)``.
     inverse_std : tf.Tensor, optional
         Tensor of shape ``(..., n_assets)`` or ``(..., n_assets, 1)``.
-        If omitted, the layer computes the covariance-eigensystem branch directly
-        without materializing a ones vector.
+        When provided, the eigensystem is interpreted as belonging to a
+        correlation matrix. If omitted, it is interpreted as belonging directly
+        to the covariance matrix.
 
     Returns
     -------
@@ -615,12 +616,13 @@ class EigenWeightsLayer(layers.Layer):
         Parameters
         ----------
         eigenvectors : tf.Tensor
-            Tensor of shape ``(..., n_assets, n_assets)``.
+            Orthonormal eigenvectors with shape ``(..., n_assets, n_assets)``.
         inverse_eigenvalues : tf.Tensor
             Tensor of shape ``(..., n_assets)`` or ``(..., n_assets, 1)``.
         inverse_std : tf.Tensor, optional
             Optional tensor of shape ``(..., n_assets)`` or ``(..., n_assets, 1)``
-            representing inverse standard deviations.
+            representing inverse standard deviations. When provided, the
+            eigensystem must represent the corresponding correlation matrix.
 
         Returns
         -------
@@ -633,16 +635,24 @@ class EigenWeightsLayer(layers.Layer):
 
         inverse_eigenvalues = tf.cast(tf.convert_to_tensor(inverse_eigenvalues), dtype)
 
-        eigenvector_sum = tf.reduce_sum(eigenvectors_work, axis=-2)
-        target_shape = tf.shape(eigenvector_sum)
-
+        target_shape = tf.shape(eigenvectors_work)[:-1]
         inverse_eigenvalues = tf.reshape(inverse_eigenvalues, target_shape)
-        spectral_term = inverse_eigenvalues * eigenvector_sum
+
+        if inverse_std is None:
+            spectral_rhs = tf.reduce_sum(eigenvectors_work, axis=-2)
+        else:
+            inverse_std = tf.cast(tf.convert_to_tensor(inverse_std), dtype)
+            inverse_std = tf.reshape(inverse_std, target_shape)
+            spectral_rhs = tf.linalg.matvec(
+                eigenvectors_work,
+                inverse_std,
+                transpose_a=True,
+            )
+
+        spectral_term = inverse_eigenvalues * spectral_rhs
         raw_weights = tf.linalg.matvec(eigenvectors_work, spectral_term)
 
         if inverse_std is not None:
-            inverse_std = tf.cast(tf.convert_to_tensor(inverse_std), dtype)
-            inverse_std = tf.reshape(inverse_std, target_shape)
             raw_weights = raw_weights * inverse_std
 
         denom = tf.reduce_sum(raw_weights, axis=-1, keepdims=True)

@@ -589,24 +589,54 @@ class TestCustomLayers:
         diag = tf.linalg.diag_part(reconstructed)
         assert float(tf.reduce_max(tf.abs(diag - 1.0)).numpy()) < 1e-6
 
-    def test_eigen_weights_layer(self):
-        """EigenWeightsLayer matches numpy einsum formulation."""
+    def test_eigen_weights_layer_matches_exact_gmv_from_covariance(self):
+        """EigenWeightsLayer matches GMV weights from the full covariance."""
         layer = EigenWeightsLayer(name='test_eigen_weights')
 
-        batch_size, n_assets = 2, 4
-        eigenvectors = tf.linalg.qr(tf.random.normal((batch_size, n_assets, n_assets)))[0]
-        inverse_eigenvalues = tf.random.uniform((batch_size, n_assets, 1), 0.5, 1.5)
-        inverse_std = tf.random.uniform((batch_size, n_assets, 1), 0.8, 1.2)
+        covariance = tf.constant(
+            [
+                [[2.0, 1.0, 0.0], [1.0, 2.0 / 3.0, 0.0], [0.0, 0.0, 1.0]],
+                [[1.0, 0.2, 0.1], [0.2, 2.0, 0.3], [0.1, 0.3, 1.5]],
+            ],
+            dtype=tf.float32,
+        )
+        std = tf.sqrt(tf.linalg.diag_part(covariance))
+        inverse_std = tf.math.reciprocal(std)
+        correlation = (
+            covariance
+            * tf.expand_dims(inverse_std, axis=-1)
+            * tf.expand_dims(inverse_std, axis=-2)
+        )
+        eigenvalues, eigenvectors = tf.linalg.eigh(correlation)
+        inverse_eigenvalues = tf.math.reciprocal(eigenvalues)
 
-        weights = layer(eigenvectors, inverse_eigenvalues, inverse_std)
+        weights = layer(
+            eigenvectors,
+            inverse_eigenvalues,
+            tf.expand_dims(inverse_std, axis=-1),
+        )
 
-        ev = eigenvectors.numpy()
-        inv_eig = inverse_eigenvalues.numpy().reshape(batch_size, n_assets)
-        inv_std_np = inverse_std.numpy().reshape(batch_size, n_assets)
-        c = ev.sum(axis=1)
-        raw = np.einsum('bik,bk,bk,bi->bi', ev, inv_eig, c, inv_std_np)
-        expected = raw / raw.sum(axis=1, keepdims=True)
-        np.testing.assert_allclose(weights.numpy().squeeze(-1), expected, rtol=1e-5, atol=1e-6)
+        precision = tf.linalg.inv(covariance)
+        raw_expected = tf.reduce_sum(precision, axis=-1, keepdims=True)
+        expected = raw_expected / tf.reduce_sum(
+            raw_expected,
+            axis=-2,
+            keepdims=True,
+        )
+
+        np.testing.assert_allclose(
+            weights.numpy(),
+            expected.numpy(),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            tf.reduce_sum(weights, axis=-2).numpy(),
+            1.0,
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        assert float(weights[0, 0, 0].numpy()) < 0.0
 
     def test_eigen_weights_layer_without_inverse_std(self):
         """When inverse_std is omitted, no extra scaling is applied."""
@@ -625,28 +655,24 @@ class TestCustomLayers:
         expected = raw / raw.sum(axis=1, keepdims=True)
         np.testing.assert_allclose(weights.numpy().squeeze(-1), expected, rtol=1e-5, atol=1e-6)
 
-    def test_eigen_weights_layer_fixed_inputs_matches_reference(self):
-        """Fixed inputs should reproduce the original reference formula."""
+    def test_eigen_weights_layer_uses_inverse_std_on_both_sides(self):
+        """Diagonal covariance weights should scale with inverse variance."""
         layer = EigenWeightsLayer(name='test_eigen_weights_fixed')
 
-        eigenvectors = tf.constant(
-            [[[1.0, 0.0, 0.0],
-              [0.2, 0.9, 0.1],
-              [0.3, 0.2, 0.8]]],
-            dtype=tf.float32,
-        )
-        inverse_eigenvalues = tf.constant([[[1.2], [0.7], [1.1]]], dtype=tf.float32)
-        inverse_std = tf.constant([[[0.9], [1.0], [1.1]]], dtype=tf.float32)
+        eigenvectors = tf.eye(3, batch_shape=[1])
+        inverse_eigenvalues = tf.ones((1, 3), dtype=tf.float32)
+        inverse_std = tf.constant([[0.5, 1.0, 2.0]], dtype=tf.float32)
 
         weights = layer(eigenvectors, inverse_eigenvalues, inverse_std)
 
-        ev = eigenvectors.numpy()
-        inv_eig = inverse_eigenvalues.numpy().reshape(1, 3)
-        inv_std_np = inverse_std.numpy().reshape(1, 3)
-        c = ev.sum(axis=1)
-        raw = np.einsum('bik,bk,bk,bi->bi', ev, inv_eig, c, inv_std_np)
-        expected = raw / raw.sum(axis=1, keepdims=True)
-        np.testing.assert_allclose(weights.numpy().squeeze(-1), expected, rtol=1e-6, atol=1e-7)
+        raw_expected = tf.square(inverse_std)
+        expected = raw_expected / tf.reduce_sum(raw_expected, axis=-1, keepdims=True)
+        np.testing.assert_allclose(
+            weights.numpy().squeeze(-1),
+            expected.numpy(),
+            rtol=1e-6,
+            atol=1e-7,
+        )
 
     def test_correlation_eigen_transform_layer_without_attributes(self):
         """CorrelationEigenTransformLayer should clean correlation without attributes."""
