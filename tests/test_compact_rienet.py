@@ -638,6 +638,85 @@ class TestCustomLayers:
         )
         assert float(weights[0, 0, 0].numpy()) < 0.0
 
+    @pytest.mark.parametrize(
+        "row_scaled",
+        [False, True],
+        ids=["orthonormal", "positive_row_scaled"],
+    )
+    def test_eigen_weights_layer_matches_direct_inverse_correlation(self, row_scaled):
+        """Orthonormal and row-scaled eigenvectors should produce exact GMV weights."""
+        layer = EigenWeightsLayer(
+            name=f'test_eigen_weights_direct_{row_scaled}',
+            dtype=tf.float64,
+        )
+
+        batch_size, n_assets = 3, 5
+        random_matrix = tf.random.stateless_normal(
+            (batch_size, n_assets, n_assets),
+            seed=(101, 202),
+            dtype=tf.float64,
+        )
+        eigenvectors = tf.linalg.qr(random_matrix)[0]
+        eigenvalues = tf.random.stateless_uniform(
+            (batch_size, n_assets),
+            seed=(303, 404),
+            minval=0.5,
+            maxval=2.0,
+            dtype=tf.float64,
+        )
+        inverse_std = tf.random.stateless_uniform(
+            (batch_size, n_assets),
+            seed=(505, 606),
+            minval=0.6,
+            maxval=1.8,
+            dtype=tf.float64,
+        )
+
+        if row_scaled:
+            row_scale = tf.random.stateless_uniform(
+                (batch_size, n_assets),
+                seed=(707, 808),
+                minval=0.5,
+                maxval=2.0,
+                dtype=tf.float64,
+            )
+            eigenvectors = eigenvectors * tf.expand_dims(row_scale, axis=-1)
+
+        weights = layer(
+            eigenvectors,
+            tf.expand_dims(tf.math.reciprocal(eigenvalues), axis=-1),
+            tf.expand_dims(inverse_std, axis=-1),
+        )
+
+        correlation = tf.matmul(
+            tf.matmul(eigenvectors, tf.linalg.diag(eigenvalues)),
+            tf.linalg.matrix_transpose(eigenvectors),
+        )
+        inverse_correlation = tf.linalg.inv(correlation)
+        raw_reference = inverse_std * tf.linalg.matvec(
+            inverse_correlation,
+            inverse_std,
+        )
+        weights_reference = raw_reference / tf.reduce_sum(
+            raw_reference,
+            axis=-1,
+            keepdims=True,
+        )
+        weights_reference = tf.expand_dims(weights_reference, axis=-1)
+
+        np.testing.assert_allclose(
+            weights.numpy(),
+            weights_reference.numpy(),
+            rtol=1e-10,
+            atol=1e-12,
+        )
+        np.testing.assert_allclose(
+            tf.reduce_sum(weights, axis=-2).numpy(),
+            1.0,
+            rtol=0.0,
+            atol=1e-12,
+        )
+
     def test_eigen_weights_layer_without_inverse_std(self):
         """When inverse_std is omitted, no extra scaling is applied."""
         layer = EigenWeightsLayer(name='test_eigen_weights_no_std')

@@ -559,16 +559,18 @@ class EigenWeightsLayer(layers.Layer):
     This layer is intended for direct external use and accepts explicit inputs:
     eigenvectors, inverse eigenvalues, and optionally inverse standard deviations.
 
-    Let ``V`` be orthonormal eigenvectors, ``lambda_inv`` inverse eigenvalues,
-    and ``d`` inverse standard deviations. When ``inverse_std`` is provided,
-    the eigensystem represents a correlation matrix ``C`` and the covariance is
-    ``Sigma = diag(d^-1) C diag(d^-1)``. The raw weights are computed as::
+    Let ``U`` contain either orthonormal eigenvectors ``V`` or positive row-scaled
+    eigenvectors ``U = S V``, ``lambda_inv`` be inverse eigenvalues, and ``d``
+    inverse standard deviations. When ``inverse_std`` is provided, define
+    ``r_i = ||U_i||^-2``. The raw weights are computed as::
 
-        raw = d * V diag(lambda_inv) V^T d
+        raw = d * r * U diag(lambda_inv) U^T (r * d)
 
-    This is exactly ``Sigma^-1 1`` without materializing or inverting ``Sigma``.
-    When ``inverse_std`` is omitted, the eigensystem represents the covariance
-    directly and the layer computes ``V diag(lambda_inv) V^T 1``.
+    For orthonormal eigenvectors ``r`` is one, so the expression reduces to the
+    standard formula automatically. This computes exact GMV weights without
+    materializing or inverting the covariance matrix. When ``inverse_std`` is
+    omitted, the eigensystem represents the covariance directly and the layer
+    computes ``V diag(lambda_inv) V^T 1``.
 
     In both cases, the output is normalized to sum to one across assets.
 
@@ -582,7 +584,8 @@ class EigenWeightsLayer(layers.Layer):
     Call Arguments
     --------------
     eigenvectors : tf.Tensor
-        Orthonormal eigenvectors with shape ``(..., n_assets, n_assets)``.
+        Orthonormal or positive row-scaled orthonormal eigenvectors with shape
+        ``(..., n_assets, n_assets)``.
     inverse_eigenvalues : tf.Tensor
         Tensor of shape ``(..., n_assets)`` or ``(..., n_assets, 1)``.
     inverse_std : tf.Tensor, optional
@@ -616,7 +619,8 @@ class EigenWeightsLayer(layers.Layer):
         Parameters
         ----------
         eigenvectors : tf.Tensor
-            Orthonormal eigenvectors with shape ``(..., n_assets, n_assets)``.
+            Orthonormal or positive row-scaled orthonormal eigenvectors with shape
+            ``(..., n_assets, n_assets)``.
         inverse_eigenvalues : tf.Tensor
             Tensor of shape ``(..., n_assets)`` or ``(..., n_assets, 1)``.
         inverse_std : tf.Tensor, optional
@@ -643,9 +647,17 @@ class EigenWeightsLayer(layers.Layer):
         else:
             inverse_std = tf.cast(tf.convert_to_tensor(inverse_std), dtype)
             inverse_std = tf.reshape(inverse_std, target_shape)
+
+            epsilon = epsilon_for_dtype(dtype, self.epsilon)
+            inverse_row_norm_sq = tf.math.reciprocal(
+                tf.maximum(
+                    tf.reduce_sum(tf.square(eigenvectors_work), axis=-1),
+                    epsilon,
+                )
+            )
             spectral_rhs = tf.linalg.matvec(
                 eigenvectors_work,
-                inverse_std,
+                inverse_row_norm_sq * inverse_std,
                 transpose_a=True,
             )
 
@@ -653,7 +665,7 @@ class EigenWeightsLayer(layers.Layer):
         raw_weights = tf.linalg.matvec(eigenvectors_work, spectral_term)
 
         if inverse_std is not None:
-            raw_weights = raw_weights * inverse_std
+            raw_weights = raw_weights * inverse_std * inverse_row_norm_sq
 
         denom = tf.reduce_sum(raw_weights, axis=-1, keepdims=True)
         epsilon = epsilon_for_dtype(dtype, self.epsilon)

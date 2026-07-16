@@ -20,18 +20,6 @@ This repository is intended for:
 
 For a pyTorch implementation, please refer to the [RIEnet-torch](https://github.com/bongiornoc/RIEnet-torch) repository.
 
-## Release Notes
-
-### 1.1.9
-
-This release fixes a correctness bug in `EigenWeightsLayer` when `inverse_std`
-is provided. In earlier versions, inverse standard deviations were applied only
-to the left side of the inverse-covariance product, so the normalized result was
-not generally the exact unconstrained GMV portfolio. The layer now applies the
-scaling on both sides and matches the direct solution obtained from the inverse
-covariance matrix while retaining the efficient spectral computation. Users of
-this branch should upgrade to version 1.1.9.
-
 ## What this package provides
 
 - End-to-end training on a realized-variance objective for GMV portfolios
