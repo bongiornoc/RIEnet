@@ -220,7 +220,8 @@ class DimensionAwareLayer(layers.Layer):
     Parameters
     ----------
     features : list of str
-        List of features to add: 'n_stocks', 'n_days', 'q', 'rsqrt_n_days'
+        List of features to add: 'n_stocks', 'n_days', 'q', 'rsqrt_n_days'.
+        Here ``q`` is the ratio ``n_stocks / n_days``.
     name : str, optional
         Layer name
     """
@@ -277,7 +278,7 @@ class DimensionAwareLayer(layers.Layer):
         tensors_to_concat = []
         
         if 'q' in self.features:
-            q = n_days / n_stocks
+            q = n_stocks / n_days
             tensors_to_concat.append(self._set_attribute(q, final_shape, target_dtype))
             
         if 'n_stocks' in self.features:

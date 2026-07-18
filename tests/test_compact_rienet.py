@@ -521,6 +521,23 @@ class TestCustomLayers:
         # Should output only the 3 attribute channels
         expected_shape = (batch_size, n_stocks, len(features))
         assert enhanced.shape == expected_shape
+
+    def test_dimension_aware_q_is_n_stocks_over_n_days(self):
+        """The q feature should use the random-matrix ratio n / t."""
+        layer = DimensionAwareLayer(features=['q'], name='test_dim_aware_q')
+
+        batch_size, n_stocks, n_days = 2, 6, 50
+        standardized_returns = tf.zeros((batch_size, n_stocks, n_days))
+        correlation_matrix = tf.eye(n_stocks, batch_shape=[batch_size])
+
+        q = layer([standardized_returns, correlation_matrix])
+
+        expected_q = np.full(
+            (batch_size, n_stocks, 1),
+            n_stocks / n_days,
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(q.numpy(), expected_q, rtol=1e-6)
     
     def test_deep_layer(self):
         """Test DeepLayer."""

@@ -1436,7 +1436,7 @@ class RIEnetLayer(layers.Layer):
         Allowed values are:
         - 'n_stocks': number of assets in the cross-section.
         - 'n_days': lookback length.
-        - 'q': ratio n_days / n_stocks.
+        - 'q': ratio n_stocks / n_days.
         - 'rsqrt_n_days': reciprocal sqrt of lookback length.
         Defaults to ('n_stocks', 'n_days', 'q').
     lag_transform_variant : Literal['compact', 'per_lag'], default 'compact'
@@ -1553,7 +1553,7 @@ class RIEnetLayer(layers.Layer):
             Additional features concatenated before eigenvalue cleaning:
             - ``'n_stocks'``: number of assets in the universe.
             - ``'n_days'``: lookback length.
-            - ``'q'``: ratio ``n_days / n_stocks``.
+            - ``'q'``: ratio ``n_stocks / n_days``.
             - ``'rsqrt_n_days'``: ``1 / sqrt(n_days)``.
         normalize_transformed_variance : bool, default True
             If True, rescales transformed inverse volatilities so that the implied

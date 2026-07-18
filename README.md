@@ -220,12 +220,12 @@ layer = CorrelationEigenTransformLayer(name="corr_cleaner")
 # Correlation matrix: (batch, n_assets, n_assets)
 corr = tf.eye(6, batch_shape=[4])
 
-# Optional attributes: (batch, k) e.g. q, lookback, regime flags, etc.
+# Optional attributes: (batch, k) e.g. q = n_assets / n_days, lookback, etc.
 attrs = tf.constant([
-    [0.5, 60.0],
-    [0.7, 60.0],
-    [1.2, 30.0],
-    [0.9, 90.0],
+    [0.1, 60.0],
+    [0.1, 60.0],
+    [0.2, 30.0],
+    [0.06666667, 90.0],
 ], dtype=tf.float32)
 
 # With attributes (default output_type='correlation')
