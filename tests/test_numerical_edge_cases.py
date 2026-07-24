@@ -1,12 +1,19 @@
 """Numerical edge-case and validation regression tests."""
 
+import math
+
 import numpy as np
 import pytest
 import tensorflow as tf
 
 from rienet import RIEnetLayer, variance_loss_function
+from rienet.dtype_utils import epsilon_for_dtype
 from rienet.ops_layers import CustomNormalizationLayer, StandardDeviationLayer
-from rienet.trainable_layers import CorrelationEigenTransformLayer, LagTransformLayer
+from rienet.trainable_layers import (
+    CorrelationEigenTransformLayer,
+    LagTransformLayer,
+    _tanhc,
+)
 
 
 def _assert_all_finite(tensor):
@@ -21,6 +28,144 @@ def _assert_weights_normalized(weights, atol=1e-5):
         rtol=1e-5,
         atol=atol,
     )
+
+
+@pytest.mark.parametrize(
+    ("dtype", "rtol", "atol"),
+    [
+        (tf.float32, 2e-6, 2e-7),
+        (tf.float64, 2e-13, 2e-15),
+    ],
+    ids=["float32", "float64"],
+)
+def test_tanhc_is_accurate_and_finite_across_numerical_regimes(
+    dtype,
+    rtol,
+    atol,
+):
+    values = np.array(
+        [
+            -100.0,
+            -1.0,
+            -2e-2,
+            -1e-4,
+            -1e-12,
+            -1e-40,
+            0.0,
+            1e-40,
+            1e-12,
+            1e-4,
+            2e-2,
+            1.0,
+            100.0,
+        ],
+        dtype=dtype.as_numpy_dtype,
+    )
+    expected = np.ones_like(values)
+    nonzero = values != 0
+    expected[nonzero] = np.tanh(values[nonzero]) / values[nonzero]
+
+    actual = _tanhc(tf.constant(values, dtype=dtype))
+
+    _assert_all_finite(actual)
+    np.testing.assert_allclose(actual.numpy(), expected, rtol=rtol, atol=atol)
+    assert actual.numpy()[6] == 1.0
+
+
+@pytest.mark.parametrize("dtype", [tf.float32, tf.float64], ids=["float32", "float64"])
+def test_tanhc_graph_gradients_are_finite_at_and_near_zero(dtype):
+    @tf.function
+    def value_and_gradient(values):
+        with tf.GradientTape() as tape:
+            tape.watch(values)
+            output = _tanhc(values)
+            total = tf.reduce_sum(output)
+        return output, tape.gradient(total, values)
+
+    values = tf.constant(
+        [-1e-4, -1e-12, 0.0, 1e-12, 1e-4],
+        dtype=dtype,
+    )
+    output, gradient = value_and_gradient(values)
+
+    _assert_all_finite(output)
+    _assert_all_finite(gradient)
+    np.testing.assert_allclose(output.numpy()[2], 1.0, rtol=0.0, atol=0.0)
+    np.testing.assert_allclose(gradient.numpy()[2], 0.0, rtol=0.0, atol=0.0)
+
+
+def _assign_positive_layer_parameter(layer, variable, target):
+    floor = float(epsilon_for_dtype(variable.dtype, layer._eps_base).numpy())
+    variable.assign(layer._inv_softplus(float(target) - floor))
+
+
+def test_compact_lag_transform_is_finite_at_old_negative_epsilon_singularity():
+    layer = LagTransformLayer(variant="compact", dtype=tf.float64)
+    returns = tf.Variable([[[-1000.0], [0.0], [1000.0]]], dtype=tf.float64)
+    _ = layer(returns)
+
+    floor = float(epsilon_for_dtype(tf.float64, layer._eps_base).numpy())
+    _assign_positive_layer_parameter(layer, layer._raw_c0, 2.0)
+    _assign_positive_layer_parameter(layer, layer._raw_c1, 0.2)
+    _assign_positive_layer_parameter(layer, layer._raw_c3, 1.0)
+    _assign_positive_layer_parameter(layer, layer._raw_c4, 0.1)
+    _assign_positive_layer_parameter(
+        layer,
+        layer._raw_c2,
+        math.exp(-0.1) - floor,
+    )
+
+    with tf.GradientTape() as tape:
+        output = layer(returns)
+        loss = tf.reduce_sum(tf.square(output))
+    gradients = tape.gradient(loss, [returns] + layer.trainable_variables)
+
+    beta = layer._pos(layer._raw_c2) - layer._pos(layer._raw_c3) * tf.exp(
+        -layer._pos(layer._raw_c4)
+    )
+    alpha = layer._pos(layer._raw_c0)
+    expected_limit = alpha * returns
+
+    np.testing.assert_allclose(beta.numpy(), -floor, rtol=0.0, atol=2e-15)
+    _assert_all_finite(output)
+    np.testing.assert_allclose(
+        output.numpy(),
+        expected_limit.numpy(),
+        rtol=5e-9,
+        atol=1e-12,
+    )
+    assert all(gradient is not None for gradient in gradients)
+    for gradient in gradients:
+        _assert_all_finite(gradient)
+
+
+def test_per_lag_transform_is_finite_at_smallest_positive_beta():
+    layer = LagTransformLayer(variant="per_lag")
+    returns = tf.Variable(
+        [[[-1000.0, -1.0, 0.0, 1.0, 1000.0]]],
+        dtype=tf.float32,
+    )
+    _ = layer(returns)
+    layer._raw_beta.assign(tf.fill(layer._raw_beta.shape, -100.0))
+
+    with tf.GradientTape() as tape:
+        output = layer(returns)
+        loss = tf.reduce_sum(tf.square(output))
+    gradients = tape.gradient(loss, [returns] + layer.trainable_variables)
+
+    alpha = tf.reshape(layer._pos(layer._raw_alpha), (1, 1, -1))
+    expected_limit = alpha * returns
+
+    _assert_all_finite(output)
+    np.testing.assert_allclose(
+        output.numpy(),
+        expected_limit.numpy(),
+        rtol=2e-6,
+        atol=2e-6,
+    )
+    assert all(gradient is not None for gradient in gradients)
+    for gradient in gradients:
+        _assert_all_finite(gradient)
 
 
 def test_sum_normalization_preserves_negative_denominator_sign():

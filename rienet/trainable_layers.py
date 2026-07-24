@@ -59,6 +59,33 @@ OutputComponent = Literal[
     "eigenvectors",
     "transformed_std",
 ]
+
+
+def _tanhc(x: tf.Tensor) -> tf.Tensor:
+    """
+    Evaluate ``tanh(x) / x`` with its continuous value at zero.
+
+    A fourth-order series avoids the removable singularity and loss of
+    precision near zero. The crossover depends only on the active floating
+    dtype, while masked operands keep both branches and their gradients finite.
+    """
+    dtype = x.dtype
+    cutoff = tf.sqrt(tf.sqrt(epsilon_for_dtype(dtype, 0.0)))
+    use_series = tf.abs(x) < cutoff
+
+    series_x = tf.where(use_series, x, tf.zeros_like(x))
+    x_squared = tf.square(series_x)
+    series = (
+        tf.ones_like(x)
+        - x_squared / tf.cast(3.0, dtype)
+        + tf.cast(2.0 / 15.0, dtype) * tf.square(x_squared)
+    )
+
+    ratio_x = tf.where(use_series, tf.ones_like(x), x)
+    ratio = tf.tanh(ratio_x) / ratio_x
+    return tf.where(use_series, series, ratio)
+
+
 OutputToken = Union[OutputComponent, Literal["all"]]
 OutputType = Union[OutputToken, Sequence[OutputToken]]
 RecurrentCell = RecurrentCellType
@@ -1112,7 +1139,7 @@ class LagTransformLayer(layers.Layer):
     name : str, optional
         Layer name
     eps : float, optional
-        Base epsilon used in positivity constraints and safe divisions.
+        Base epsilon used in positivity constraints.
         If omitted, uses ``keras.backend.epsilon()``.
     variant : Literal["compact", "per_lag"], default "compact"
         Parameterization variant.
@@ -1123,7 +1150,8 @@ class LagTransformLayer(layers.Layer):
     Notes
     -----
     The transformation applied in both variants is:
-    ``(alpha / (beta + eps)) * tanh(beta * R)``.
+    ``alpha * R * tanhc(beta * R)``, where
+    ``tanhc(x) = tanh(x) / x`` and ``tanhc(0) = 1``.
     """
     _ALLOWED_VARIANTS = {"compact", "per_lag"}
 
@@ -1144,7 +1172,7 @@ class LagTransformLayer(layers.Layer):
         name : str, optional
             Keras layer name.
         eps : float, optional
-            Base epsilon used in positivity constraints and safe divisions.
+            Base epsilon used in positivity constraints.
             If omitted, uses ``keras.backend.epsilon()``.
         variant : Literal['compact', 'per_lag'], default 'compact'
             Lag parameterization mode:
@@ -1322,7 +1350,6 @@ class LagTransformLayer(layers.Layer):
         R = ensure_dense_tensor(R)
         R_work, original_dtype = ensure_float32(R)
         dtype = R_work.dtype
-        eps_tensor = epsilon_for_dtype(dtype, self._eps_base)
 
         if self.variant == "per_lag":
             R_work = self._assert_per_lag_runtime_shape(R_work)
@@ -1335,9 +1362,9 @@ class LagTransformLayer(layers.Layer):
             pad_ones = tf.ones(ndims - 1, dtype=tf.int32)
             shape_T = tf.concat([pad_ones, [T]], 0)
 
-            alpha_div_beta = tf.reshape(alpha / (beta + eps_tensor), shape_T)
+            alpha = tf.reshape(alpha, shape_T)
             beta = tf.reshape(beta, shape_T)
-            transformed = alpha_div_beta * tf.tanh(beta * R_work)
+            transformed = alpha * R_work * _tanhc(beta * R_work)
             return restore_dtype(transformed, original_dtype)
 
         T = tf.shape(R_work)[-1]  # Time dimension length
@@ -1362,11 +1389,11 @@ class LagTransformLayer(layers.Layer):
         pad_ones = tf.ones(ndims - 1, dtype=tf.int32)
         shape_T = tf.concat([pad_ones, [T]], 0)
 
-        alpha_div_beta = tf.reshape(alpha / (beta + eps_tensor), shape_T)
+        alpha = tf.reshape(alpha, shape_T)
         beta = tf.reshape(beta, shape_T)
 
-        # Apply transformation: alpha/beta * tanh(beta * R)
-        transformed = alpha_div_beta * tf.tanh(beta * R_work)
+        # Apply the continuous transformation at beta = 0.
+        transformed = alpha * R_work * _tanhc(beta * R_work)
         return restore_dtype(transformed, original_dtype)
 
     def compute_output_shape(self, input_shape: Tuple[int, ...]) -> tf.TensorShape:
